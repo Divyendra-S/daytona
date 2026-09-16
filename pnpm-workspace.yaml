@@ -1,0 +1,10 @@
+allowBuilds:
+  node-pty: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+minimumReleaseAgeExclude:
+  - '@ai-sdk/gateway@3.0.194'
+  - '@ai-sdk/react@3.0.286'
+  - ai@6.0.283
+  - brace-expansion@1.1.21 || 5.0.12
+  - electron-to-chromium@1.5.428
