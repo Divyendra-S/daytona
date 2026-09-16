@@ -38,6 +38,16 @@ export const projects = pgTable("projects", {
   requests: integer().notNull().default(0),
   /** When the first usage was recorded; earlier calls were never counted. */
   usageSince: timestamp({ withTimezone: true }),
+  /**
+   * The signed preview URL in use for each of the project's ports, and when it
+   * expires. Kept so the browser keeps seeing one hostname: Daytona's warning
+   * page is acknowledged per host, so signing a fresh URL on every poll put the
+   * preview back behind that page seconds after it was dismissed.
+   */
+  previewUrls: jsonb()
+    .$type<Record<string, { url: string; expiresAt: string }>>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
 });
 
 /** Every publish, kept so the history view can show what shipped when. */

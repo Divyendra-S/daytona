@@ -1,5 +1,9 @@
 import { Daytona, type Sandbox } from "@daytonaio/sdk";
-import { readProjectMetadata } from "./project-storage";
+import {
+  readPreviewUrl,
+  readProjectMetadata,
+  savePreviewUrl,
+} from "./project-storage";
 import {
   AUTO_ARCHIVE_MINUTES,
   AUTO_STOP_MINUTES,
@@ -322,13 +326,57 @@ const publicPreviewUrl = (signedUrl: string) => {
  * A preview URL the browser may load directly: scoped to one port, carrying
  * its own short-lived token, and safe to hand out.
  */
-export const signedPreviewUrl = async (
+export const signedPreviewUrl = (projectId: string, port: number) =>
+  stableSignedUrl(projectId, port, async () => {
+    const { sandbox } = await openProject(projectId);
+    const { url } = await sandbox.getSignedPreviewUrl(port, SIGNED_URL_SECONDS);
+    return url;
+  });
+
+/**
+ * The project's signed URL for a port, signing a new one only when there is no
+ * usable one left.
+ *
+ * Daytona shows a browser a warning page the first time it visits a preview
+ * host and remembers the click-through against that host — so a URL signed per
+ * request, each with a hostname of its own, put the preview back behind that
+ * page seconds after it was dismissed. The URL is kept in the project's row
+ * rather than in memory because a Worker isolate is short-lived, and a new
+ * isolate signing its own URL would bring the warning back just the same.
+ */
+const stableSignedUrl = async (
   projectId: string,
   port: number,
-  expiresInSeconds = SIGNED_URL_SECONDS,
+  sign: () => Promise<string>,
 ) => {
-  const { sandbox } = await openProject(projectId);
-  const { url } = await sandbox.getSignedPreviewUrl(port, expiresInSeconds);
+  const id = `${projectId}:${port}`;
+  const now = Date.now();
+
+  const remembered = signedUrls.get(id);
+  if (remembered && remembered.expiresAt > now) {
+    return publicPreviewUrl(remembered.url);
+  }
+
+  const stored = await readPreviewUrl(projectId, port).catch(() => null);
+  const storedUntil = stored ? Date.parse(stored.expiresAt) - RESIGN_MARGIN : 0;
+  if (stored && storedUntil > now) {
+    signedUrls.set(id, { url: stored.url, expiresAt: storedUntil });
+    return publicPreviewUrl(stored.url);
+  }
+
+  const url = await sign().catch(() => "");
+  if (!url) return "";
+
+  const expiresAt = now + SIGNED_URL_SECONDS * 1000;
+  signedUrls.set(id, { url, expiresAt: expiresAt - RESIGN_MARGIN });
+  await savePreviewUrl(projectId, port, {
+    url,
+    expiresAt: new Date(expiresAt).toISOString(),
+  }).catch(() => {
+    // Worth a slower path, not a failed preview: without the row this signs
+    // again next time, which costs a warning page rather than the preview.
+  });
+
   return publicPreviewUrl(url);
 };
 
@@ -339,7 +387,11 @@ const signedUrls: Map<string, { url: string; expiresAt: number }> =
     { url: string; expiresAt: number }
   >) ?? (globals["__aiBuilderSignedUrls"] = new Map());
 
-const SIGNED_URL_SECONDS = 3600;
+/** Daytona's maximum. The longer this is, the rarer the warning page. */
+const SIGNED_URL_SECONDS = 86_400;
+
+/** Re-signed this long before expiry, so a URL handed out now outlives the page. */
+const RESIGN_MARGIN = 10 * 60 * 1000;
 
 /**
  * A signed preview URL for a project that may well be asleep — **without
@@ -351,31 +403,17 @@ const SIGNED_URL_SECONDS = 3600;
  * running sandbox, so this asks Daytona for the sandbox and signs. A URL for a
  * stopped sandbox simply does not answer until something starts it.
  */
-export const dormantPreviewUrl = async (projectId: string, port: number) => {
-  const id = `${projectId}:${port}`;
-  const cached = signedUrls.get(id);
-  if (cached && cached.expiresAt > Date.now()) return cached.url;
+export const dormantPreviewUrl = (projectId: string, port: number) =>
+  stableSignedUrl(projectId, port, async () => {
+    const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
+      sandboxId: null,
+    }));
+    if (!sandboxId) return "";
 
-  const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
-    sandboxId: null,
-  }));
-  if (!sandboxId) return "";
-
-  const url = await getDaytona()
-    .get(sandboxId)
-    .then((sandbox) => sandbox.getSignedPreviewUrl(port, SIGNED_URL_SECONDS))
-    .then((signed) => publicPreviewUrl(signed.url))
-    .catch(() => "");
-
-  if (url) {
-    // Re-signed a few minutes early, so a URL handed out now outlives the page.
-    signedUrls.set(id, {
-      url,
-      expiresAt: Date.now() + (SIGNED_URL_SECONDS - 300) * 1000,
-    });
-  }
-  return url;
-};
+    const sandbox = await getDaytona().get(sandboxId);
+    const { url } = await sandbox.getSignedPreviewUrl(port, SIGNED_URL_SECONDS);
+    return url;
+  });
 
 /**
  * Tell Daytona the project is in use, so its idle timer does not stop the

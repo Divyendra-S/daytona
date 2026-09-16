@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "preview_urls" jsonb DEFAULT '{}'::jsonb NOT NULL;

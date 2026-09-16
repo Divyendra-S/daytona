@@ -140,6 +140,32 @@ export const deleteProject = async (projectId: string) => {
   await getDb().delete(projects).where(eq(projects.id, projectId));
 };
 
+/** The signed preview URL a project is currently handing out for a port. */
+export const readPreviewUrl = async (projectId: string, port: number) => {
+  const [row] = await getDb()
+    .select({ previewUrls: projects.previewUrls })
+    .from(projects)
+    .where(eq(projects.id, projectId));
+
+  return row?.previewUrls?.[String(port)] ?? null;
+};
+
+/** Merged into the column rather than written over it, so ports do not evict each other. */
+export const savePreviewUrl = async (
+  projectId: string,
+  port: number,
+  entry: { url: string; expiresAt: string },
+) => {
+  await getDb()
+    .update(projects)
+    .set({
+      previewUrls: sql`coalesce(${projects.previewUrls}, '{}'::jsonb) || ${JSON.stringify(
+        { [String(port)]: entry },
+      )}::jsonb`,
+    })
+    .where(eq(projects.id, projectId));
+};
+
 /** Every project, newest first. */
 export const listProjects = async () => {
   const [projectRows, conversationRows, releaseRows] = await Promise.all([
