@@ -1,7 +1,11 @@
 import type { FileInfo } from "@daytonaio/sdk";
 import { tool } from "ai";
 import { z } from "zod";
-import { resolveInApp } from "./project-files";
+import {
+  readSandboxFile,
+  resolveInApp,
+  writeSandboxFile,
+} from "./project-files";
 import { run, shellQuote } from "./project-runtime";
 import { openProject, previewOrigin } from "./sandbox";
 import {
@@ -84,9 +88,7 @@ export const createTools = (projectId: string) => {
     execute: async ({ file }) => {
       const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
-      const buffer = await (await sandboxFs())
-        .downloadFile(target)
-        .catch(() => null);
+      const buffer = await readSandboxFile(projectId, target);
       if (!buffer) return { ok: false, error: "File not found." };
       return {
         ok: true,
@@ -105,13 +107,7 @@ export const createTools = (projectId: string) => {
     execute: async ({ file, content }) => {
       const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
-      const fs = await sandboxFs();
-      await fs
-        .createFolder(target.slice(0, target.lastIndexOf("/")), "755")
-        .catch(() => {
-          // Already there.
-        });
-      await fs.uploadFile(Buffer.from(content, "utf8"), target);
+      await writeSandboxFile(projectId, target, content);
       return { ok: true, file };
     },
   });
@@ -216,7 +212,7 @@ export const createTools = (projectId: string) => {
       // Read-modify-write rather than the sandbox's own replace call, which
       // has no first-occurrence-only mode and cannot report a miss.
       const fs = await sandboxFs();
-      const buffer = await fs.downloadFile(target).catch(() => null);
+      const buffer = await readSandboxFile(projectId, target);
       if (!buffer) return { ok: false, error: "File not found." };
 
       const content = buffer.toString("utf8");
@@ -229,7 +225,7 @@ export const createTools = (projectId: string) => {
         : content.replace(search, replace);
       const replacements = all ? content.split(search).length - 1 : 1;
 
-      await fs.uploadFile(Buffer.from(next, "utf8"), target);
+      await writeSandboxFile(projectId, target, next);
       return { ok: true, file, replacements };
     },
   });
@@ -246,16 +242,14 @@ export const createTools = (projectId: string) => {
       if (!target) return { ok: false, error: "Invalid file path." };
 
       const fs = await sandboxFs();
-      const existing = await fs
-        .downloadFile(target)
-        .then((buffer: Buffer) => buffer.toString("utf8"))
-        .catch(() => "");
+      const existing =
+        (await readSandboxFile(projectId, target))?.toString("utf8") ?? "";
       await fs
         .createFolder(target.slice(0, target.lastIndexOf("/")), "755")
         .catch(() => {
           // Already there.
         });
-      await fs.uploadFile(Buffer.from(`${existing}${content}`, "utf8"), target);
+      await writeSandboxFile(projectId, target, `${existing}${content}`);
       return { ok: true, file, appendedBytes: content.length };
     },
   });

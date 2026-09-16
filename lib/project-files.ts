@@ -1,6 +1,6 @@
 import path from "node:path";
 import { safeSegments } from "./project-paths";
-import { run } from "./project-runtime";
+import { run, runStep, shellQuote } from "./project-runtime";
 import { openProject } from "./sandbox";
 import type { ProjectFileNode } from "./project-types";
 
@@ -203,7 +203,7 @@ export const readProjectFile = async (
     return { ok: false, error: "File is too large to preview." };
   }
 
-  const buffer = await sandbox.fs.downloadFile(target).catch(() => null);
+  const buffer = await readSandboxFile(projectId, target);
   if (!buffer) return { ok: false, error: "File not found." };
   if (looksBinary(buffer)) {
     return {
@@ -234,14 +234,50 @@ export const writeProjectFile = async (
   const target = await resolveInApp(projectId, filePath);
   if (!target) throw new Error("Invalid file path.");
 
-  const { sandbox } = await openProject(projectId);
-  const directory = target.slice(0, target.lastIndexOf("/"));
-  await sandbox.fs.createFolder(directory, "755").catch(() => {
-    // Already there.
-  });
-  await sandbox.fs.uploadFile(
-    typeof content === "string" ? Buffer.from(content, "utf8") : content,
-    target,
-  );
+  await writeSandboxFile(projectId, target, content);
   return target;
+};
+
+/**
+ * Write a file at an absolute path in the sandbox, parent directories and all.
+ *
+ * Through the shell rather than the SDK's `uploadFile`, which sends multipart
+ * and reaches for `form-data` with a dynamic require: a bundler cannot trace
+ * that, and a Worker has no `node_modules` to fall back on, so bundled it fails
+ * every write. Base64 down a pipe needs nothing but the shell.
+ *
+ * ponytail: the content travels inside a command line, which suits the files an
+ * agent writes; chunk it if this ever has to carry megabytes.
+ */
+export const readSandboxFile = async (projectId: string, target: string) => {
+  // Base64 out through the shell, for the same reason writes go in that way:
+  // the SDK's download is multipart, and its parser is reached for with a
+  // dynamic require that does not survive bundling.
+  const result = await run(
+    projectId,
+    `base64 -w0 ${shellQuote(target)} 2>/dev/null || base64 ${shellQuote(target)}`,
+    undefined,
+    120,
+  );
+  if (!result.ok) return null;
+  return Buffer.from(result.stdout.replace(/\s/g, ""), "base64");
+};
+
+export const writeSandboxFile = async (
+  projectId: string,
+  target: string,
+  content: Buffer | string,
+) => {
+  const encoded = (
+    typeof content === "string" ? Buffer.from(content, "utf8") : content
+  ).toString("base64");
+  const directory = target.slice(0, target.lastIndexOf("/"));
+
+  await runStep(
+    "Write",
+    projectId,
+    `mkdir -p ${shellQuote(directory)} && printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(target)}`,
+    undefined,
+    120,
+  );
 };

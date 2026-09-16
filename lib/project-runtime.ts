@@ -1,3 +1,4 @@
+import { setProjectSandbox } from "./project-storage";
 import {
   createProjectSandbox,
   openProject,
@@ -110,10 +111,15 @@ export const STARTER_PAGE = `export default function Home() {
  * the logo it rendered so nothing else references it. Runs before the initial
  * commit, so the project's history starts from the page the user sees.
  */
-export const installStarterPage = async (sandbox: ProjectSandbox) => {
-  await sandbox.sandbox.fs.uploadFile(
-    Buffer.from(STARTER_PAGE, "utf8"),
+export const installStarterPage = async (
+  projectId: string,
+  sandbox: ProjectSandbox,
+) => {
+  const { writeSandboxFile } = await import("./project-files");
+  await writeSandboxFile(
+    projectId,
     `${sandbox.app}/app/page.tsx`,
+    STARTER_PAGE,
   );
   await sandbox.sandbox.fs
     .deleteFile(`${sandbox.app}/public/placeholder-freestyle-logo.svg`)
@@ -135,6 +141,11 @@ export const createProjectFiles = async (
 ) => {
   const { sandboxId, sandbox } = await createProjectSandbox(projectId);
 
+  // Before a single step runs: each one opens the sandbox by project id, which
+  // reads this, and a creation that fails from here on can only clean up the
+  // sandbox it made if the row names it.
+  await setProjectSandbox(projectId, sandboxId);
+
   await runStep(
     "Clone",
     projectId,
@@ -144,7 +155,7 @@ export const createProjectFiles = async (
   );
 
   if (!repoUrl) {
-    await installStarterPage(sandbox);
+    await installStarterPage(projectId, sandbox);
     await runStep(
       "Repository setup",
       projectId,

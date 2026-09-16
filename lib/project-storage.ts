@@ -140,6 +140,24 @@ export const deleteProject = async (projectId: string) => {
   await getDb().delete(projects).where(eq(projects.id, projectId));
 };
 
+/**
+ * Point a project at its sandbox, the moment there is one.
+ *
+ * Written before the sandbox is filled rather than after: every step of filling
+ * it opens the sandbox by project id, which reads this column, and a cleanup
+ * after a failed creation needs it too — without it the sandbox is orphaned,
+ * running and unreachable, against the account's quota.
+ */
+export const setProjectSandbox = async (
+  projectId: string,
+  sandboxId: string,
+) => {
+  await getDb()
+    .update(projects)
+    .set({ sandboxId })
+    .where(eq(projects.id, projectId));
+};
+
 /** The signed preview URL a project is currently handing out for a port. */
 export const readPreviewUrl = async (projectId: string, port: number) => {
   const [row] = await getDb()
