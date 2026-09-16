@@ -97,6 +97,24 @@ const HOP_PREFIXES = [
   "x-invoke-",
 ];
 
+/**
+ * Nothing this proxy returns may be cached, by a CDN or by the browser.
+ *
+ * Every sandbox's app lives at the same paths on this one hostname — `/`,
+ * `/_next/static/chunks/app/page.js` — and which sandbox a request is for is
+ * in its query or its cookie, which a cache does not key on. A cached response
+ * is therefore one project's page, or chunk, served for another's. Said three
+ * ways: `Vercel-CDN-Cache-Control` is what Vercel's CDN obeys first and strips
+ * on the way out, `CDN-Cache-Control` is the same for other CDNs, and
+ * `Cache-Control` reaches the browser.
+ */
+const uncached = (headers: Headers) => {
+  headers.set("cache-control", "private, no-store, max-age=0");
+  headers.set("cdn-cache-control", "no-store");
+  headers.set("vercel-cdn-cache-control", "no-store");
+  return headers;
+};
+
 /** Which sandbox host this request is for, by the order documented above. */
 export const upstreamHostFor = (request: Request): string | null => {
   const own = new URL(request.url).searchParams.get(PREVIEW_HOST_PARAM);
@@ -136,10 +154,9 @@ export const relayPreview = async (
 
   if (publicPath === BRIDGE_PATH) {
     return new Response(BRIDGE_SCRIPT, {
-      headers: {
-        "content-type": "text/javascript; charset=utf-8",
-        "cache-control": "no-store",
-      },
+      headers: uncached(
+        new Headers({ "content-type": "text/javascript; charset=utf-8" }),
+      ),
     });
   }
 
@@ -149,7 +166,9 @@ export const relayPreview = async (
       "This is AI Builder's preview proxy, and this request does not say which project's preview it is for. Open the preview from the workspace — and if it still lands here, the browser is refusing the cookie the proxy needs.",
       {
         status: 400,
-        headers: { "content-type": "text/plain; charset=utf-8" },
+        headers: uncached(
+          new Headers({ "content-type": "text/plain; charset=utf-8" }),
+        ),
       },
     );
   }
@@ -219,6 +238,7 @@ export const relayPreview = async (
   if (location) {
     out.set("location", location.replace(upstreamOrigin, publicOrigin));
   }
+  uncached(out);
   if (
     cookieValue(request.headers.get("cookie"), PREVIEW_HOST_COOKIE) !==
     upstreamHost
