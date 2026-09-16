@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "runobi-preview-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // Every sandbox gets its own hostname under this wildcard, so the zone must be
+  // on Cloudflare. Set the same domain as PREVIEW_PROXY_DOMAIN in the app.
+  "routes": [
+    { "pattern": "*.preview.example.com/*", "zone_name": "example.com" }
+  ]
+}

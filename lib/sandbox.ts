@@ -289,6 +289,22 @@ export const previewOrigin = async (projectId: string, port: number) => {
 };
 
 /**
+ * The URL the browser loads for a signed preview. Daytona's own preview host
+ * greets a browser with a warning page it remembers in a cookie — which an
+ * iframe cannot keep — so a deployed build fronts it with the preview proxy in
+ * `workers/preview-proxy`, on the domain `PREVIEW_PROXY_DOMAIN` names. The
+ * upstream host travels in the hostname (`.` as `--`), so the proxy stores
+ * nothing. Unset, the signed URL is used as is.
+ */
+const publicPreviewUrl = (signedUrl: string) => {
+  const domain = process.env["PREVIEW_PROXY_DOMAIN"];
+  if (!domain || !signedUrl) return signedUrl;
+  const url = new URL(signedUrl);
+  url.hostname = `${url.hostname.replace(/\./g, "--")}.${domain}`;
+  return url.toString();
+};
+
+/**
  * A preview URL the browser may load directly: scoped to one port, carrying
  * its own short-lived token, and safe to hand out.
  */
@@ -299,7 +315,7 @@ export const signedPreviewUrl = async (
 ) => {
   const { sandbox } = await openProject(projectId);
   const { url } = await sandbox.getSignedPreviewUrl(port, expiresInSeconds);
-  return url;
+  return publicPreviewUrl(url);
 };
 
 /** Signed URLs by `projectId:port`, so listing projects is not a burst of signing calls. */
@@ -334,7 +350,7 @@ export const dormantPreviewUrl = async (projectId: string, port: number) => {
   const url = await getDaytona()
     .get(sandboxId)
     .then((sandbox) => sandbox.getSignedPreviewUrl(port, SIGNED_URL_SECONDS))
-    .then((signed) => signed.url)
+    .then((signed) => publicPreviewUrl(signed.url))
     .catch(() => "");
 
   if (url) {

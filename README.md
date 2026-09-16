@@ -45,7 +45,14 @@ DATABASE_URL=postgresql://...
 # The API has no login of its own, so a deployed build must sit behind real
 # access control. Unset, AI Builder answers this machine only.
 APP_HOSTS=builder.example.com
+
+# Deployed builds only: the domain the preview proxy in workers/preview-proxy
+# is served on. Without it the preview loads Daytona's own host, which greets
+# every load in an iframe with a warning page.
+PREVIEW_PROXY_DOMAIN=preview.example.com
 ```
+
+**Deploying** needs one more piece than running locally: the preview proxy. Locally, `lib/preview-proxy.ts` fronts each sandbox from `127.0.0.1`; a browser elsewhere cannot reach that, and Daytona's own preview host shows a warning page that an iframe can never click past. `workers/preview-proxy` is the same proxy as a Cloudflare Worker on a wildcard hostname — `<sandbox>.preview.example.com` — that needs no secret, because the sandbox host it forwards to is already a signed, expiring one. Put the zone on Cloudflare, set the route in `workers/preview-proxy/wrangler.jsonc`, run `wrangler deploy` there, and set `PREVIEW_PROXY_DOMAIN` in the deployment.
 
 ```bash
 pnpm install
