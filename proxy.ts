@@ -3,9 +3,11 @@ import { NextResponse, type NextRequest } from "next/server";
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
- * The API runs commands on this machine, so it only answers pages served by
- * this machine: a request from another site (CSRF), or arriving through a
- * hostname that was pointed at 127.0.0.1 (DNS rebinding), is refused.
+ * The API drives this machine's projects — their sandboxes, their code and the
+ * preview proxy's loopback port — with no login in front of it, so it only
+ * answers pages served by this machine: a request from another site (CSRF), or
+ * arriving through a hostname that was pointed at 127.0.0.1 (DNS rebinding), is
+ * refused. This is the whole auth model; a deployed build needs a real one.
  */
 export function proxy(request: NextRequest) {
   const host = (request.headers.get("host") ?? "").replace(/:\d+$/, "");

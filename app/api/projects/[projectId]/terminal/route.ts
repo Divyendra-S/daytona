@@ -46,18 +46,19 @@ export async function GET(
   }
 
   if (slug === APP_SESSION) {
-    // Servers do not survive AI Builder restarting, so opening a project
-    // brings its dev server — and production, if published — back up.
-    ensureDevServer(projectId, metadata.devPort);
+    // The sandbox may have been stopped for idleness since the project was
+    // last open, so this starts it and brings the dev server — and production,
+    // if published — back up.
+    await ensureDevServer(projectId);
     if (metadata.liveReleaseId) {
-      ensureProductionServer(projectId, metadata.prodPort);
+      await ensureProductionServer(projectId);
     }
   }
 
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+    async start(controller) {
       // Terminal output is arbitrary bytes; base64 keeps it intact through SSE's
       // line-oriented framing.
       const send = (chunk: Uint8Array) => {
@@ -69,7 +70,7 @@ export async function GET(
         }
       };
 
-      const unsubscribe = subscribeToTerminal(projectId, slug, send);
+      const unsubscribe = await subscribeToTerminal(projectId, slug, send);
 
       req.signal.addEventListener("abort", () => {
         unsubscribe();
@@ -118,15 +119,15 @@ export async function POST(
   }
 
   if (typeof payload.data === "string") {
-    writeToTerminal(projectId, slug, payload.data);
+    await writeToTerminal(projectId, slug, payload.data);
   }
 
   if (payload.cols && payload.rows) {
-    resizeTerminal(projectId, slug, payload.cols, payload.rows);
+    await resizeTerminal(projectId, slug, payload.cols, payload.rows);
   }
 
   if (payload.signal === "sigint" || payload.signal === "sigkill") {
-    signalTerminal(projectId, slug, payload.signal);
+    await signalTerminal(projectId, slug, payload.signal);
   }
 
   return NextResponse.json({ ok: true });

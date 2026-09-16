@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { NextResponse } from "next/server";
-import { createProjectFiles, projectPaths } from "@/lib/local-project";
+import { projectPaths } from "@/lib/project-paths";
+import { createProjectFiles } from "@/lib/project-runtime";
 import {
   createConversation,
   listProjects,
@@ -12,14 +13,35 @@ import {
   type ProjectItem,
   type ProjectMetadata,
 } from "@/lib/project-types";
+import { deleteProjectSandbox, dormantPreviewUrl } from "@/lib/sandbox";
 import { ensureDevServer } from "@/lib/terminal-bridge";
-import { FIRST_PORT, LOCAL_HOST } from "@/lib/vars";
+import { SANDBOX_DEV_PORT, SANDBOX_PROD_PORT } from "@/lib/vars";
 
-const toProjectItem = (id: string, metadata: ProjectMetadata): ProjectItem => ({
+/**
+ * A project as the client sees it.
+ *
+ * Both URLs are signed: single-port and expiring, so unlike the sandbox-wide
+ * preview token they are safe to hand to the browser. Neither starts the
+ * sandbox — the home screen lists every project, and waking them all would
+ * undo the idle auto-stop that keeps the bill near zero.
+ *
+ * The workspace does not load `previewUrl` directly: it loads the `proxyUrl`
+ * that `preview-status` returns, which is this machine's proxy and carries the
+ * click-to-select bridge. `previewUrl` is what the address bar shows.
+ */
+const toProjectItem = async (
+  id: string,
+  metadata: ProjectMetadata,
+): Promise<ProjectItem> => ({
   id,
   name: metadata.name,
-  previewUrl: `http://${LOCAL_HOST}:${metadata.devPort}`,
-  productionUrl: `http://${LOCAL_HOST}:${metadata.prodPort}`,
+  previewUrl: metadata.sandboxId
+    ? await dormantPreviewUrl(id, SANDBOX_DEV_PORT)
+    : "",
+  productionUrl: metadata.liveReleaseId
+    ? await dormantPreviewUrl(id, SANDBOX_PROD_PORT)
+    : "",
+  hasSandbox: Boolean(metadata.sandboxId),
   conversations: metadata.conversations,
   releases: metadata.releases,
   liveReleaseId: metadata.liveReleaseId,
@@ -29,7 +51,9 @@ const toProjectItem = (id: string, metadata: ProjectMetadata): ProjectItem => ({
 export async function GET() {
   const projects = await listProjects();
   return NextResponse.json({
-    projects: projects.map(({ id, metadata }) => toProjectItem(id, metadata)),
+    projects: await Promise.all(
+      projects.map(({ id, metadata }) => toProjectItem(id, metadata)),
+    ),
   });
 }
 
@@ -50,33 +74,29 @@ export async function POST(req: Request) {
     ? `https://github.com/${githubRepoName.replace(/^https?:\/\/github\.com\//, "")}`
     : undefined;
 
-  // ponytail: ports only avoid other projects' ports, not other programs on
-  // this machine; change FIRST_PORT in lib/vars.ts if one collides.
-  const devPort =
-    Math.max(
-      FIRST_PORT - 2,
-      ...(await listProjects()).map(({ metadata }) => metadata.devPort),
-    ) + 2;
-
   const projectId = randomUUID().slice(0, 8);
+
+  // Written before the sandbox exists so that a creation that fails half way
+  // still leaves a folder to clean up, and rewritten with the sandbox's id as
+  // soon as there is one — that id is the only way back to the project's code.
   const metadata: ProjectMetadata = {
-    version: 4,
+    version: 5,
     name,
     createdAt: new Date().toISOString(),
-    devPort,
-    prodPort: devPort + 1,
+    sandboxId: null,
     conversations: [],
     releases: [],
     liveReleaseId: null,
   };
-
-  // Recorded before the slow clone and install, so a project created
-  // meanwhile is not handed the same ports.
   await writeProjectMetadata(projectId, metadata);
 
   try {
-    await createProjectFiles(projectId, sourceRepoUrl);
+    metadata.sandboxId = await createProjectFiles(projectId, sourceRepoUrl);
+    await writeProjectMetadata(projectId, metadata);
   } catch (error) {
+    await deleteProjectSandbox(projectId).catch(() => {
+      // A sandbox we cannot reach is left for the garbage collector.
+    });
     await rm(projectPaths(projectId).root, { recursive: true, force: true });
     return NextResponse.json(
       {
@@ -89,7 +109,9 @@ export async function POST(req: Request) {
     );
   }
 
-  ensureDevServer(projectId, devPort);
+  await ensureDevServer(projectId).catch(() => {
+    // The preview starts it again; a slow first boot must not fail creation.
+  });
 
   const conversationId = randomUUID();
   const next = await createConversation(
@@ -101,6 +123,6 @@ export async function POST(req: Request) {
   return NextResponse.json({
     id: projectId,
     conversationId,
-    project: toProjectItem(projectId, next),
+    project: await toProjectItem(projectId, next),
   });
 }

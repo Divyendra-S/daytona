@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { createTools } from "@/lib/create-tools";
 import { streamLlmResponse, turnMetadata } from "@/lib/llm-provider";
 import { authorizeProject } from "@/lib/project-access";
+import { touchProject } from "@/lib/sandbox";
 import { addUsage, saveConversationMessages } from "@/lib/project-storage";
 import { systemPrompt } from "@/lib/system-prompt";
 
@@ -39,6 +40,10 @@ export async function POST(req: Request) {
 
   await saveConversationMessages(projectId, conversationId, messages);
 
+  // A turn can run for minutes without touching the sandbox; tell Daytona the
+  // project is in use so its idle timer does not stop it mid-answer.
+  void touchProject(projectId);
+
   const jar = await cookies();
   const userApiKey = jar.get("user-api-key")?.value;
 
@@ -55,9 +60,9 @@ export async function POST(req: Request) {
   const messageMetadata = turnMetadata(payload.model);
 
   const result = await streamLlmResponse({
-    system: systemPrompt(metadata.devPort),
+    system: systemPrompt(),
     messages,
-    tools: createTools(projectId, metadata.devPort),
+    tools: createTools(projectId),
     // Only fall back to the visitor's own key when the server has none.
     apiKey: hasGlobalKey ? undefined : userApiKey,
     onUsage: (usage) => addUsage(projectId, usage),

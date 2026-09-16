@@ -37,13 +37,15 @@ export const EMPTY_USAGE: ProjectUsage = {
 
 /** A project's state, stored as `project.json` in its folder under `projects/`. */
 export type ProjectMetadata = {
-  version: 4;
+  version: 5;
   name: string;
   createdAt: string;
-  /** The dev server's port: the preview is http://127.0.0.1:devPort. */
-  devPort: number;
-  /** The production server's port, serving the live release once published. */
-  prodPort: number;
+  /**
+   * The Daytona sandbox holding this project's code, git history and servers.
+   * Null only for a project created before the move to Daytona, whose code is
+   * still on this machine and which cannot be opened until it is recreated.
+   */
+  sandboxId: string | null;
   conversations: ProjectConversationSummary[];
   releases: ProjectRelease[];
   /** The release production is currently serving. */
@@ -55,8 +57,17 @@ export type ProjectMetadata = {
 export type ProjectItem = {
   id: string;
   name: string;
+  /**
+   * A signed, expiring URL straight to the sandbox's dev port — what the address
+   * bar shows, and where "open in a new tab" goes. Not where the preview frame
+   * loads from: that is the `proxyUrl` from `preview-status`, which carries the
+   * click-to-select bridge. Empty when signing fails, so never a URL base.
+   */
   previewUrl: string;
+  /** A signed, expiring URL straight to the sandbox's production port. */
   productionUrl: string;
+  /** False for a pre-Daytona project, which has no sandbox and cannot be opened. */
+  hasSandbox: boolean;
   conversations: ProjectConversationSummary[];
   releases: ProjectRelease[];
   liveReleaseId: string | null;

@@ -51,7 +51,10 @@ const reportUsage = async (
     await onUsage({
       inputTokens: totalUsage.inputTokens ?? 0,
       outputTokens: totalUsage.outputTokens ?? 0,
-      cost: steps.reduce((sum, step) => sum + stepCost(step.providerMetadata), 0),
+      cost: steps.reduce(
+        (sum, step) => sum + stepCost(step.providerMetadata),
+        0,
+      ),
       requests: steps.length,
     });
   } catch (error) {

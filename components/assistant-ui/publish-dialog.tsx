@@ -100,7 +100,14 @@ export function PublishDialog({
 
   const releases = project.releases;
   const isBuilding = releases.some((release) => release.state === "publishing");
-  const productionHost = new URL(project.productionUrl).host;
+  const productionHost = (() => {
+    try {
+      return new URL(project.productionUrl).host;
+    } catch {
+      // Nothing published yet, so there is no production URL to show.
+      return "";
+    }
+  })();
 
   const publish = async () => {
     setIsPublishing(true);

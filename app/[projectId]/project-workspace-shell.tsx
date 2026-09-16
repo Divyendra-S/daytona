@@ -463,10 +463,10 @@ export function ProjectWorkspaceShell({
                     <span className="text-sm font-medium">Chat</span>
                   </button>
                   <div className="ml-auto flex items-center gap-1.5">
-                    {selectedProject.previewUrl && (
+                    {selectedProject.hasSandbox && (
                       <ViewToggle view={panelView} onChange={setPanelView} />
                     )}
-                    {selectedProject.previewUrl && (
+                    {selectedProject.hasSandbox && (
                       <PublishDialog
                         project={selectedProject}
                         onPublish={onPublish}
@@ -487,7 +487,7 @@ export function ProjectWorkspaceShell({
                       : "pointer-events-none opacity-0",
                   )}
                 >
-                  {showWorkspacePanel && selectedProject.previewUrl && (
+                  {showWorkspacePanel && selectedProject.hasSandbox && (
                     <BrowserControls
                       previewUrl={selectedProject.previewUrl}
                       iframeRef={iframeRef}
@@ -581,7 +581,7 @@ export function ProjectWorkspaceShell({
               )}
             >
               {showWorkspacePanel &&
-                (selectedProject?.previewUrl ? (
+                (selectedProject?.hasSandbox ? (
                   <>
                     {/* Stay mounted so switching keeps preview state, canvas frames, and code selection. */}
                     <div
@@ -618,10 +618,12 @@ export function ProjectWorkspaceShell({
                           // looks like nothing happened.
                           setPanelView("preview");
                           const iframe = iframeRef.current;
-                          if (!iframe || !anchor) return;
-                          const url = new URL(
-                            iframe.src || selectedProject.previewUrl,
-                          );
+                          // No `src` yet means the preview never came up, so
+                          // there is nowhere to jump to. `previewUrl` is not a
+                          // fallback: it is empty whenever signing failed.
+                          const base = iframe?.src;
+                          if (!base || !anchor) return;
+                          const url = new URL(base);
                           url.hash = anchor;
                           iframe.src = url.toString();
                         }}
@@ -870,6 +872,10 @@ function AppPreview({
   const [serverRunning, setServerRunning] = useState(true);
   const [everUp, setEverUp] = useState(false);
   const [starting, setStarting] = useState(false);
+  /** The sandbox itself is asleep or booting — a few seconds, and not a failure. */
+  const [waking, setWaking] = useState(false);
+  /** Something the preview cannot wait out, such as a sandbox that is gone. */
+  const [fatal, setFatal] = useState<string | null>(null);
   /** Where the frame loads the app from: the preview proxy, which carries the select bridge. */
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
@@ -882,23 +888,44 @@ function AppPreview({
     setServerRunning(true);
     setEverUp(false);
     setPreviewSrc(null);
+    setWaking(false);
+    setFatal(null);
 
     const check = async () => {
-      const { up, running, proxyUrl } = await fetch(
-        `/api/projects/${project.id}/preview-status`,
-        { cache: "no-store" },
-      )
+      const {
+        up,
+        running,
+        proxyUrl,
+        waking: sandboxWaking,
+        error,
+      } = await fetch(`/api/projects/${project.id}/preview-status`, {
+        cache: "no-store",
+      })
         .then((response) =>
           response.ok ? response.json() : { up: false, running: true },
         )
         .then(
-          (data: { up?: boolean; running?: boolean; proxyUrl?: string }) => ({
+          (data: {
+            up?: boolean;
+            running?: boolean;
+            proxyUrl?: string;
+            waking?: boolean;
+            error?: string;
+          }) => ({
             up: Boolean(data.up),
             running: data.running !== false,
             proxyUrl: data.proxyUrl ?? null,
+            waking: Boolean(data.waking),
+            error: data.error ?? null,
           }),
           // AI Builder itself unreachable: keep waiting rather than claim the server stopped.
-          () => ({ up: false, running: true, proxyUrl: null }),
+          () => ({
+            up: false,
+            running: true,
+            proxyUrl: null,
+            waking: false,
+            error: null,
+          }),
         );
       if (cancelled) return;
 
@@ -910,6 +937,8 @@ function AppPreview({
       wasUp = up;
       setServerUp(up);
       setServerRunning(running);
+      setWaking(sandboxWaking);
+      setFatal(error);
       if (proxyUrl) setPreviewSrc(proxyUrl);
       if (up) setEverUp(true);
       // Quick while waiting for it, slow once it is up: only a restart needs catching then.
@@ -982,7 +1011,15 @@ function AppPreview({
         <div className="relative min-h-0 flex-1 bg-muted/30">
           {(!everUp || !iframeLoaded || serverUp === false) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
-              {serverUp === false && !serverRunning ? (
+              {fatal ? (
+                <div className="flex flex-col items-center gap-3 px-6 text-center">
+                  <p className="text-sm text-muted-foreground">{fatal}</p>
+                  <p className="max-w-xs text-xs text-muted-foreground/70">
+                    Its files lived in that sandbox, so there is nothing to
+                    restart. Create a new project to start again.
+                  </p>
+                </div>
+              ) : serverUp === false && !serverRunning && !waking ? (
                 <div className="flex flex-col items-center gap-3 px-6 text-center">
                   <p className="text-sm text-muted-foreground">
                     The dev server is not running.
@@ -1008,11 +1045,13 @@ function AppPreview({
                 <div className="flex flex-col items-center gap-3">
                   <Loader2Icon className="size-6 animate-spin text-muted-foreground/40" />
                   <p className="text-sm text-muted-foreground/40">
-                    {serverUp === false
-                      ? everUp
-                        ? "Dev server restarting…"
-                        : "Starting dev server…"
-                      : "Loading preview…"}
+                    {waking
+                      ? "Waking the sandbox up…"
+                      : serverUp === false
+                        ? everUp
+                          ? "Dev server restarting…"
+                          : "Starting dev server…"
+                        : "Loading preview…"}
                   </p>
                 </div>
               )}

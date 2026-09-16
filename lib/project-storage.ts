@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { type UIMessage } from "ai";
-import { isProjectId, projectPaths } from "./local-project";
+import { isProjectId, projectPaths } from "./project-paths";
 import {
   EMPTY_USAGE,
   type ProjectConversationSummary,
@@ -42,12 +42,30 @@ const writeJson = async (file: string, value: unknown) => {
   await rename(temp, file);
 };
 
+/**
+ * A project's metadata, brought up to the current shape.
+ *
+ * Version 4 kept the project's code on this machine and addressed its servers
+ * by port. Version 5 keeps the code in a Daytona sandbox instead. A v4 project
+ * is readable — so it still lists, and its conversations still open — but it
+ * has no sandbox, and anything that needs to run its code says so rather than
+ * failing obscurely.
+ */
+const migrate = (
+  stored: ProjectMetadata & { version: number },
+): ProjectMetadata =>
+  stored.version >= 5
+    ? stored
+    : { ...stored, version: 5, sandboxId: stored.sandboxId ?? null };
+
 export const readProjectMetadata = async (
   projectId: string,
 ): Promise<ProjectMetadata> =>
-  JSON.parse(
-    await readFile(metadataPath(projectId), "utf8"),
-  ) as ProjectMetadata;
+  migrate(
+    JSON.parse(
+      await readFile(metadataPath(projectId), "utf8"),
+    ) as ProjectMetadata & { version: number },
+  );
 
 export const writeProjectMetadata = async (
   projectId: string,

@@ -1,6 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import path from "node:path";
-import { projectPaths } from "./local-project";
+import { run, shellQuote } from "./project-runtime";
 
 /**
  * Keep an Adorable-made scratch folder out of the project's commits.
@@ -11,17 +9,11 @@ import { projectPaths } from "./local-project";
  * leaves the project's `.gitignore` alone. A file that was already committed stays tracked.
  */
 export const excludeFromGit = async (projectId: string, entry: string) => {
-  const file = path.join(
-    projectPaths(projectId).app,
-    ".git",
-    "info",
-    "exclude",
-  );
-  const current = await readFile(file, "utf8").catch(() => "");
-  if (current.split("\n").some((line) => line.trim() === entry)) return;
-  await mkdir(path.dirname(file), { recursive: true });
-  await appendFile(
-    file,
-    `${current && !current.endsWith("\n") ? "\n" : ""}${entry}\n`,
+  const quoted = shellQuote(entry);
+  await run(
+    projectId,
+    `mkdir -p .git/info && touch .git/info/exclude && grep -qxF -- ${quoted} .git/info/exclude || printf '%s\\n' ${quoted} >> .git/info/exclude`,
+    undefined,
+    30,
   );
 };

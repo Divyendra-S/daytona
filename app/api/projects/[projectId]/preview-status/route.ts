@@ -1,36 +1,49 @@
-import { connect } from "node:net";
 import { NextResponse } from "next/server";
 import { authorizeProject } from "@/lib/project-access";
 import { ensurePreviewProxy } from "@/lib/preview-proxy";
-import { devServerState, ensureDevServer } from "@/lib/terminal-bridge";
-import { LOCAL_HOST } from "@/lib/vars";
+import {
+  previewOrigin,
+  projectSandboxState,
+  touchProject,
+} from "@/lib/sandbox";
+import {
+  devServerState,
+  ensureDevServer,
+  ensureProductionServer,
+  productionServerState,
+} from "@/lib/terminal-bridge";
+import { LOCAL_HOST, PREVIEW_TOKEN_HEADER, SANDBOX_DEV_PORT } from "@/lib/vars";
 
 /**
- * Whether the project's dev server is accepting connections.
+ * Whether the project's dev server is answering.
  *
- * A TCP connect rather than an HTTP request: the preview polls this every few seconds, and
- * requesting a page would make the dev server render and log it every time.
+ * A `HEAD` rather than a `GET`: the preview polls this every few seconds, and requesting a page
+ * would make the dev server render and log it every time. (In local mode this was a bare TCP
+ * connect, which is no longer possible — the server is in a sandbox, reachable only through an
+ * authenticated HTTPS proxy.)
  */
-const portOpen = (port: number) =>
-  new Promise<boolean>((resolve) => {
-    const socket = connect({ host: LOCAL_HOST, port, timeout: 500 });
-    const done = (up: boolean) => {
-      socket.destroy();
-      resolve(up);
-    };
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
+const serverAnswers = async (projectId: string) => {
+  const { url, token } = await previewOrigin(projectId, SANDBOX_DEV_PORT);
+  return fetch(url, {
+    method: "HEAD",
+    redirect: "manual",
+    headers: { [PREVIEW_TOKEN_HEADER]: token },
+    signal: AbortSignal.timeout(5000),
+  }).then(
+    (response) => response.status < 500,
+    () => false,
+  );
+};
 
 /**
- * `up`: the port answers. `running`: a dev server process is alive, so a closed port means it is
- * still starting rather than stopped. `proxyUrl`: where the preview should load the app from —
- * the preview proxy, which adds the click-to-select bridge.
+ * `up`: the dev server answers. `running`: a dev server is alive, so no answer means it is still
+ * starting rather than stopped. `waking`: the sandbox itself is asleep or starting, which takes
+ * a few seconds and must not look like a broken preview. `proxyUrl`: where the preview should
+ * load the app from — the preview proxy, which adds the click-to-select bridge.
  *
- * Servers do not survive AI Builder restarting, so one this process has never started is started
- * here — the preview must not depend on the terminal tab having connected first. One that
- * started and then exited is only reported: restarting a crash on every poll would loop.
+ * A project whose sandbox has gone idle is started here: the preview must not depend on a
+ * terminal tab having connected first. A dev server that started and then exited is only
+ * reported, since restarting a crash on every poll would loop.
  */
 export async function GET(
   _req: Request,
@@ -41,23 +54,77 @@ export async function GET(
   if (!metadata) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-
-  let state = devServerState(projectId);
-  if (state === "never") {
-    ensureDevServer(projectId, metadata.devPort);
-    state = "running";
+  if (!metadata.sandboxId) {
+    return NextResponse.json({
+      up: false,
+      running: false,
+      waking: false,
+      proxyUrl: null,
+      error: "This project has no sandbox.",
+    });
   }
+
+  // Cheap and does not start anything, so a sleeping sandbox can be reported as waking rather
+  // than as a dev server that will not come up.
+  const state = await projectSandboxState(projectId);
+
+  // Daytona does not have this sandbox any more — deleted from its dashboard, or
+  // swept up by `scripts/daytona-gc.mjs`. Nothing here can bring it back, since
+  // the project's code lived inside it, and recreating one would silently hand
+  // the user an empty scaffold in place of their work. Reporting it as `waking`
+  // (which is what any non-started state used to mean) left the preview spinning
+  // "Waking the sandbox up…" forever, so it is called what it is.
+  if (state === "missing") {
+    return NextResponse.json({
+      up: false,
+      running: false,
+      waking: false,
+      proxyUrl: null,
+      error: "This project's sandbox no longer exists.",
+    });
+  }
+
+  if (state !== "started") {
+    // Starting is what `ensureDevServer` does on its way to the sandbox; this poll just says so.
+    void ensureDevServer(projectId).catch(() => {});
+    return NextResponse.json({
+      up: false,
+      running: true,
+      waking: true,
+      proxyUrl: null,
+    });
+  }
+
+  let devState = devServerState(projectId);
+  if (devState === "never") {
+    await ensureDevServer(projectId).catch(() => {});
+    devState = "running";
+  }
+
+  // A sandbox that went idle took the production server down with it, and
+  // nothing else brings it back until someone opens a terminal tab. This poll
+  // is the one thing the workspace always runs, so it restores production too.
+  // Checked on its own terms: the dev server is started a moment earlier, while
+  // the sandbox is still waking, so its state says nothing about production's.
+  if (metadata.liveReleaseId && productionServerState(projectId) === "never") {
+    void ensureProductionServer(projectId).catch(() => {});
+  }
+
   const [up, proxyPort] = await Promise.all([
-    portOpen(metadata.devPort),
-    ensurePreviewProxy(projectId, metadata.devPort).catch(() => null),
+    serverAnswers(projectId).catch(() => false),
+    ensurePreviewProxy(projectId).catch(() => null),
   ]);
+
+  // The user is watching the preview, so the sandbox is in use even if nothing else says so.
+  void touchProject(projectId);
+
   return NextResponse.json({
     up,
-    running: up || state === "running",
-    // Without the proxy the preview still works, just without click-to-select.
-    proxyUrl: proxyPort
-      ? `http://${LOCAL_HOST}:${proxyPort}`
-      : `http://${LOCAL_HOST}:${metadata.devPort}`,
+    running: up || devState === "running",
+    waking: false,
+    // Without the proxy there is no preview: the sandbox is only reachable with a token the
+    // browser must never be given.
+    proxyUrl: proxyPort ? `http://${LOCAL_HOST}:${proxyPort}` : null,
   });
 }
 
@@ -71,6 +138,6 @@ export async function POST(
   if (!metadata) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  ensureDevServer(projectId, metadata.devPort);
+  await ensureDevServer(projectId);
   return NextResponse.json({ ok: true });
 }

@@ -1,12 +1,13 @@
-import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { projectPaths } from "./local-project";
+import { safeSegments } from "./project-paths";
+import { run } from "./project-runtime";
+import { openProject } from "./sandbox";
 import type { ProjectFileNode } from "./project-types";
 
 export type { ProjectFileNode };
 
 /** Directories skipped when building the code preview tree. */
-const SKIP_DIRS = new Set([
+const SKIP_DIRS = [
   "node_modules",
   ".next",
   ".git",
@@ -16,31 +17,27 @@ const SKIP_DIRS = new Set([
   ".turbo",
   ".cache",
   "out",
-]);
+];
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TREE_ENTRIES = 2_000;
+const MAX_TREE_DEPTH = 8;
 
 /**
- * Resolve an app-relative path to an absolute one, rejecting anything that
- * would escape the app folder.
+ * Resolve an app-relative path to an absolute one inside the project's
+ * sandbox, rejecting anything that would escape the app folder.
+ *
+ * The guard still matters: the path is about to be handed to the sandbox's
+ * file API, which is as happy to read `/etc/shadow` as a project file.
  */
-export const resolveInApp = (
+export const resolveInApp = async (
   projectId: string,
   rawPath: string,
-): string | null => {
-  const { app } = projectPaths(projectId);
-  const value = rawPath.trim();
-  if (!value || value.includes("\0")) return null;
-  if (value.startsWith("/")) return null;
-
-  const segments = value
-    .replace(/^\.\//, "")
-    .split("/")
-    .filter((segment) => segment && segment !== ".");
-  if (segments.some((segment) => segment === "..")) return null;
-
-  return path.join(app, ...segments);
+): Promise<string | null> => {
+  const segments = safeSegments(rawPath);
+  if (!segments) return null;
+  const { app } = await openProject(projectId);
+  return segments.length ? `${app}/${segments.join("/")}` : app;
 };
 
 const compareNodes = (a: ProjectFileNode, b: ProjectFileNode) => {
@@ -48,56 +45,86 @@ const compareNodes = (a: ProjectFileNode, b: ProjectFileNode) => {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 };
 
-/** Walk the project app folder into a nested tree for the code preview. */
+/**
+ * Build the nested tree the code preview renders from a flat list of paths.
+ * Directories are created on the way down, so a file always has its parents
+ * even if `find` listed it first.
+ */
+const toTree = (entries: { type: string; path: string }[]) => {
+  const roots: ProjectFileNode[] = [];
+  const directories = new Map<string, ProjectFileNode[]>([["", roots]]);
+
+  const childrenOf = (dirPath: string): ProjectFileNode[] => {
+    const existing = directories.get(dirPath);
+    if (existing) return existing;
+
+    const slash = dirPath.lastIndexOf("/");
+    const parent = slash === -1 ? "" : dirPath.slice(0, slash);
+    const node: ProjectFileNode = {
+      name: dirPath.slice(slash + 1),
+      path: dirPath,
+      type: "directory",
+      children: [],
+    };
+    childrenOf(parent).push(node);
+    directories.set(dirPath, node.children!);
+    return node.children!;
+  };
+
+  for (const entry of entries) {
+    if (entry.type === "d") {
+      childrenOf(entry.path);
+      continue;
+    }
+    const slash = entry.path.lastIndexOf("/");
+    childrenOf(slash === -1 ? "" : entry.path.slice(0, slash)).push({
+      name: entry.path.slice(slash + 1),
+      path: entry.path,
+      type: "file",
+    });
+  }
+
+  const sort = (nodes: ProjectFileNode[]): ProjectFileNode[] => {
+    for (const node of nodes) if (node.children) sort(node.children);
+    return nodes.sort(compareNodes);
+  };
+  return sort(roots);
+};
+
+/**
+ * The project's files, as a nested tree for the code preview.
+ *
+ * One `find` rather than a walk over the sandbox's file API: a recursive
+ * listing would be a round trip per directory, and this is a remote machine.
+ * `-printf '%y\t%P'` gives the type and the path relative to the app folder,
+ * which is exactly the shape the tree needs.
+ */
 export const listProjectTree = async (
   projectId: string,
 ): Promise<ProjectFileNode[]> => {
-  const { app } = projectPaths(projectId);
-  let remaining = MAX_TREE_ENTRIES;
+  const prune = SKIP_DIRS.map((dir) => `-name ${dir}`).join(" -o ");
+  const result = await run(
+    projectId,
+    `find . -maxdepth ${MAX_TREE_DEPTH} \\( -type d \\( ${prune} \\) \\) -prune -o -printf '%y\\t%P\\n' | head -n ${MAX_TREE_ENTRIES + 1}`,
+    undefined,
+    60,
+  );
+  if (!result.ok) return [];
 
-  const walk = async (
-    dir: string,
-    relative: string,
-  ): Promise<ProjectFileNode[]> => {
-    if (remaining <= 0) return [];
+  const entries = result.stdout
+    .split("\n")
+    .flatMap((line) => {
+      const tab = line.indexOf("\t");
+      if (tab === -1) return [];
+      const type = line.slice(0, tab);
+      const filePath = line.slice(tab + 1);
+      // The starting point itself prints an empty path; symlinks are not walked.
+      if (!filePath || (type !== "f" && type !== "d")) return [];
+      return [{ type, path: filePath }];
+    })
+    .slice(0, MAX_TREE_ENTRIES);
 
-    const entries = await readdir(dir, { withFileTypes: true });
-    const nodes: ProjectFileNode[] = [];
-
-    for (const entry of entries) {
-      if (remaining <= 0) break;
-      if (entry.name === "." || entry.name === "..") continue;
-      if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
-
-      remaining -= 1;
-      const childRelative = relative
-        ? `${relative}/${entry.name}`
-        : entry.name;
-      const absolute = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        nodes.push({
-          name: entry.name,
-          path: childRelative,
-          type: "directory",
-          children: await walk(absolute, childRelative),
-        });
-        continue;
-      }
-
-      if (entry.isFile()) {
-        nodes.push({
-          name: entry.name,
-          path: childRelative,
-          type: "file",
-        });
-      }
-    }
-
-    return nodes.sort(compareNodes);
-  };
-
-  return walk(app, "");
+  return toTree(entries);
 };
 
 export type ProjectFileContent =
@@ -157,35 +184,64 @@ const looksBinary = (buffer: Buffer): boolean => {
   return suspicious / sample.length > 0.1;
 };
 
-/** Read a text file from the project app folder for the code preview. */
+/** Read a text file from the project for the code preview. */
 export const readProjectFile = async (
   projectId: string,
   filePath: string,
 ): Promise<ProjectFileContent> => {
-  const target = resolveInApp(projectId, filePath);
-  if (!target) return { ok: false, error: "Invalid file path." };
-
-  const { app } = projectPaths(projectId);
-  const relative = path.relative(app, target);
-  if (!relative || relative.startsWith("..")) {
+  const segments = safeSegments(filePath);
+  const target = await resolveInApp(projectId, filePath);
+  if (!segments || !segments.length || !target) {
     return { ok: false, error: "Invalid file path." };
   }
 
-  const info = await stat(target).catch(() => null);
-  if (!info || !info.isFile()) return { ok: false, error: "File not found." };
+  const { sandbox } = await openProject(projectId);
+
+  const info = await sandbox.fs.getFileDetails(target).catch(() => null);
+  if (!info || info.isDir) return { ok: false, error: "File not found." };
   if (info.size > MAX_FILE_BYTES) {
     return { ok: false, error: "File is too large to preview." };
   }
 
-  const buffer = await readFile(target);
+  const buffer = await sandbox.fs.downloadFile(target).catch(() => null);
+  if (!buffer) return { ok: false, error: "File not found." };
   if (looksBinary(buffer)) {
-    return { ok: false, error: "Binary file cannot be previewed.", binary: true };
+    return {
+      ok: false,
+      error: "Binary file cannot be previewed.",
+      binary: true,
+    };
   }
 
   return {
     ok: true,
-    path: relative.split(path.sep).join("/"),
+    path: segments.join("/"),
     content: buffer.toString("utf8"),
-    language: languageFromPath(relative),
+    language: languageFromPath(filePath),
   };
+};
+
+/**
+ * Write a file into the project, creating its parent directories. Used by the
+ * design routes, which put captured assets and reference files in the project
+ * without going through the agent's tools.
+ */
+export const writeProjectFile = async (
+  projectId: string,
+  filePath: string,
+  content: Buffer | string,
+) => {
+  const target = await resolveInApp(projectId, filePath);
+  if (!target) throw new Error("Invalid file path.");
+
+  const { sandbox } = await openProject(projectId);
+  const directory = target.slice(0, target.lastIndexOf("/"));
+  await sandbox.fs.createFolder(directory, "755").catch(() => {
+    // Already there.
+  });
+  await sandbox.fs.uploadFile(
+    typeof content === "string" ? Buffer.from(content, "utf8") : content,
+    target,
+  );
+  return target;
 };

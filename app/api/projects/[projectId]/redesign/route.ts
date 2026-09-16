@@ -1,9 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { excludeFromGit } from "@/lib/git-exclude";
 import { authorizeProject } from "@/lib/project-access";
-import { resolveInApp } from "@/lib/project-files";
+import { writeProjectFile } from "@/lib/project-files";
 
 /**
  * A live page, saved into the project for the chat agent to redesign.
@@ -119,10 +117,9 @@ export async function POST(
 
   const host = new URL(finalUrl).hostname.replace(/[^a-z0-9.-]/gi, "");
   const file = `.adorable/redesign/${host}-${Date.now().toString(36)}.html`;
-  const target = resolveInApp(projectId, file)!;
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(
-    target,
+  await writeProjectFile(
+    projectId,
+    file,
     `<!-- Source: ${finalUrl} — fetched ${new Date().toISOString()}; scripts, styles and SVG bodies stripped. Relative URLs resolve against the source. -->\n${cleaned}\n`,
   );
   await excludeFromGit(projectId, ".adorable/");

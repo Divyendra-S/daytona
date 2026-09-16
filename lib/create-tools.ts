@@ -1,53 +1,34 @@
-import {
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import path from "node:path";
+import type { FileInfo } from "@daytonaio/sdk";
 import { tool } from "ai";
 import { z } from "zod";
-import { projectPaths, run, shellQuote } from "./local-project";
+import { resolveInApp } from "./project-files";
+import { run, shellQuote } from "./project-runtime";
+import { openProject, previewOrigin } from "./sandbox";
 import {
   ensureDevServer,
-  readTerminalOutput,
+  readDevServerLogs,
   restartDevServer,
 } from "./terminal-bridge";
-import { APP_SESSION, LOCAL_HOST } from "./vars";
+import { PREVIEW_TOKEN_HEADER, SANDBOX_DEV_PORT } from "./vars";
 
 /** Terminal control sequences, stripped so the model reads log text. */
-const ANSI_ESCAPE = /\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_ESCAPE = /\[[0-?]*[ -/]*[@-~]/g;
 
-export const createTools = (projectId: string, devPort: number) => {
-  const { app } = projectPaths(projectId);
-
-  /**
-   * Resolve an app-relative path to an absolute one, rejecting anything that
-   * would escape the app folder.
-   */
-  const resolveInApp = (rawPath: string): string | null => {
-    const value = rawPath.trim();
-    if (!value || value.includes("\0") || value.startsWith("/")) return null;
-
-    const segments = value
-      .replace(/^\.\//, "")
-      .split("/")
-      .filter((s) => s && s !== ".");
-    if (segments.some((segment) => segment === "..")) return null;
-
-    return path.join(app, ...segments);
-  };
+export const createTools = (projectId: string) => {
+  const sandboxFs = async () => (await openProject(projectId)).sandbox.fs;
 
   /** A resolved path relative to the app folder, for commands run there. */
-  const relativeToApp = (target: string) => path.relative(app, target) || ".";
+  const relativeToApp = async (target: string) => {
+    const { app } = await openProject(projectId);
+    return target === app ? "." : target.slice(app.length + 1) || ".";
+  };
 
-  const runInApp = (command: string) => run(command, app);
+  const runInApp = (command: string, timeoutSeconds = 300) =>
+    run(projectId, command, undefined, timeoutSeconds);
 
-  /** The dev server's output, kept by its terminal session. */
-  const readDevServerLogs = () =>
-    readTerminalOutput(projectId, APP_SESSION)
+  /** The dev server's output, cleaned up for the model. */
+  const devServerLogs = async () =>
+    (await readDevServerLogs(projectId))
       .replace(ANSI_ESCAPE, "")
       .replace(/\r/g, "");
 
@@ -67,9 +48,13 @@ export const createTools = (projectId: string, devPort: number) => {
       file: z.string().min(1).describe("The path of the file to read."),
     }),
     execute: async ({ file }) => {
-      const target = resolveInApp(file);
+      const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
-      return { ok: true, content: await readFile(target, "utf8") };
+      const buffer = await (await sandboxFs())
+        .downloadFile(target)
+        .catch(() => null);
+      if (!buffer) return { ok: false, error: "File not found." };
+      return { ok: true, content: buffer.toString("utf8") };
     },
   });
 
@@ -81,10 +66,15 @@ export const createTools = (projectId: string, devPort: number) => {
       content: z.string().describe("The content to write to the file."),
     }),
     execute: async ({ file, content }) => {
-      const target = resolveInApp(file);
+      const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, content);
+      const fs = await sandboxFs();
+      await fs
+        .createFolder(target.slice(0, target.lastIndexOf("/")), "755")
+        .catch(() => {
+          // Already there.
+        });
+      await fs.uploadFile(Buffer.from(content, "utf8"), target);
       return { ok: true, file };
     },
   });
@@ -107,24 +97,28 @@ export const createTools = (projectId: string, devPort: number) => {
         .describe("Maximum recursion depth when recursive is true."),
     }),
     execute: async ({ path: listPath, recursive, maxDepth }) => {
-      const target = resolveInApp(listPath ?? ".");
+      const target = await resolveInApp(projectId, listPath ?? ".");
       if (!target) return { ok: false, error: "Invalid path." };
 
       if (!recursive) {
-        const entries = await readdir(target, { withFileTypes: true });
+        const entries = await (await sandboxFs())
+          .listFiles(target)
+          .catch(() => null);
+        if (!entries) return { ok: false, error: "Path not found." };
         return {
           ok: true,
           path: listPath,
-          entries: entries.map((entry) => ({
+          entries: entries.map((entry: FileInfo) => ({
             name: entry.name,
-            type: entry.isDirectory() ? "directory" : "file",
+            type: entry.isDir ? "directory" : "file",
           })),
         };
       }
 
       return {
         ...(await runInApp(
-          `find ${shellQuote(relativeToApp(target))} -maxdepth ${maxDepth} -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/.git/*'`,
+          `find ${shellQuote(await relativeToApp(target))} -maxdepth ${maxDepth} -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/.git/*'`,
+          60,
         )),
         path: listPath,
         recursive,
@@ -148,12 +142,13 @@ export const createTools = (projectId: string, devPort: number) => {
         .describe("Maximum number of matching lines to return."),
     }),
     execute: async ({ query, path: searchPath, maxResults }) => {
-      const target = resolveInApp(searchPath ?? ".");
+      const target = await resolveInApp(projectId, searchPath ?? ".");
       if (!target) return { ok: false, error: "Invalid path." };
 
       return {
         ...(await runInApp(
-          `grep -RIn --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git -- ${shellQuote(query)} ${shellQuote(relativeToApp(target))} | head -n ${maxResults}`,
+          `grep -RIn --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git -- ${shellQuote(query)} ${shellQuote(await relativeToApp(target))} | head -n ${maxResults}`,
+          60,
         )),
         query,
         path: searchPath,
@@ -174,10 +169,16 @@ export const createTools = (projectId: string, devPort: number) => {
         .describe("Replace all matches when true, otherwise first match."),
     }),
     execute: async ({ file, search, replace, all }) => {
-      const target = resolveInApp(file);
+      const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
 
-      const content = await readFile(target, "utf8");
+      // Read-modify-write rather than the sandbox's own replace call, which
+      // has no first-occurrence-only mode and cannot report a miss.
+      const fs = await sandboxFs();
+      const buffer = await fs.downloadFile(target).catch(() => null);
+      if (!buffer) return { ok: false, error: "File not found." };
+
+      const content = buffer.toString("utf8");
       if (!content.includes(search)) {
         return { ok: false, file, replacements: 0, error: "No matches found." };
       }
@@ -187,7 +188,7 @@ export const createTools = (projectId: string, devPort: number) => {
         : content.replace(search, replace);
       const replacements = all ? content.split(search).length - 1 : 1;
 
-      await writeFile(target, next);
+      await fs.uploadFile(Buffer.from(next, "utf8"), target);
       return { ok: true, file, replacements };
     },
   });
@@ -200,12 +201,20 @@ export const createTools = (projectId: string, devPort: number) => {
       content: z.string().describe("Text content to append."),
     }),
     execute: async ({ file, content }) => {
-      const target = resolveInApp(file);
+      const target = await resolveInApp(projectId, file);
       if (!target) return { ok: false, error: "Invalid file path." };
 
-      const existing = await readFile(target, "utf8").catch(() => "");
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, `${existing}${content}`);
+      const fs = await sandboxFs();
+      const existing = await fs
+        .downloadFile(target)
+        .then((buffer: Buffer) => buffer.toString("utf8"))
+        .catch(() => "");
+      await fs
+        .createFolder(target.slice(0, target.lastIndexOf("/")), "755")
+        .catch(() => {
+          // Already there.
+        });
+      await fs.uploadFile(Buffer.from(`${existing}${content}`, "utf8"), target);
       return { ok: true, file, appendedBytes: content.length };
     },
   });
@@ -216,9 +225,11 @@ export const createTools = (projectId: string, devPort: number) => {
       path: z.string().min(1).describe("Directory path to create."),
     }),
     execute: async ({ path: dirPath }) => {
-      const target = resolveInApp(dirPath);
+      const target = await resolveInApp(projectId, dirPath);
       if (!target) return { ok: false, error: "Invalid path." };
-      await mkdir(target, { recursive: true });
+      await (await sandboxFs()).createFolder(target, "755").catch(() => {
+        // Already there.
+      });
       return { ok: true, path: dirPath };
     },
   });
@@ -230,13 +241,18 @@ export const createTools = (projectId: string, devPort: number) => {
       to: z.string().min(1).describe("Destination path."),
     }),
     execute: async ({ from, to }) => {
-      const source = resolveInApp(from);
-      const destination = resolveInApp(to);
+      const source = await resolveInApp(projectId, from);
+      const destination = await resolveInApp(projectId, to);
       if (!source || !destination) {
         return { ok: false, error: "Invalid source or destination path." };
       }
-      await mkdir(path.dirname(destination), { recursive: true });
-      await rename(source, destination);
+      const fs = await sandboxFs();
+      await fs
+        .createFolder(destination.slice(0, destination.lastIndexOf("/")), "755")
+        .catch(() => {
+          // Already there.
+        });
+      await fs.moveFiles(source, destination);
       return { ok: true, from, to };
     },
   });
@@ -247,11 +263,14 @@ export const createTools = (projectId: string, devPort: number) => {
       path: z.string().min(1).describe("File or directory path to delete."),
     }),
     execute: async ({ path: deletePath }) => {
-      const target = resolveInApp(deletePath);
+      const target = await resolveInApp(projectId, deletePath);
+      const { app } = await openProject(projectId);
       if (!target || target === app) {
         return { ok: false, error: "Invalid path." };
       }
-      await rm(target, { recursive: true, force: true });
+      await (await sandboxFs()).deleteFile(target, true).catch(() => {
+        // Already gone.
+      });
       return { ok: true, path: deletePath };
     },
   });
@@ -269,15 +288,17 @@ export const createTools = (projectId: string, devPort: number) => {
       const urlPath = checkPath?.startsWith("/")
         ? checkPath
         : `/${checkPath ?? ""}`;
-      const url = `http://${LOCAL_HOST}:${devPort}${urlPath}`;
 
-      ensureDevServer(projectId, devPort);
+      await ensureDevServer(projectId);
+      const { url, token } = await previewOrigin(projectId, SANDBOX_DEV_PORT);
+      const target = `${url}${urlPath}`;
 
       // A server that was just started refuses connections for a few seconds.
       let statusCode: number | null = null;
       for (let attempt = 0; attempt < 30 && statusCode === null; attempt += 1) {
-        statusCode = await fetch(url, {
+        statusCode = await fetch(target, {
           redirect: "manual",
+          headers: { [PREVIEW_TOKEN_HEADER]: token },
           signal: AbortSignal.timeout(60_000),
         }).then(
           (response) => response.status,
@@ -290,7 +311,7 @@ export const createTools = (projectId: string, devPort: number) => {
 
       const issueRegex =
         /(error -|failed to compile|module not found|unhandled runtime error|referenceerror|typeerror|syntaxerror|cannot find module)/i;
-      const issues = readDevServerLogs()
+      const issues = (await devServerLogs())
         .split("\n")
         .filter((line) => issueRegex.test(line))
         .slice(-20);
@@ -302,7 +323,9 @@ export const createTools = (projectId: string, devPort: number) => {
       return {
         ok,
         statusCode,
-        url,
+        // The preview token authenticates the whole sandbox, so the model is
+        // shown the path it checked rather than a URL carrying a credential.
+        url: urlPath,
         issues,
         ...(ok
           ? {}
@@ -330,8 +353,8 @@ export const createTools = (projectId: string, devPort: number) => {
         .describe("Maximum number of log lines to return."),
     }),
     execute: async ({ maxLines }) => {
-      ensureDevServer(projectId, devPort);
-      const lines = readDevServerLogs().split("\n");
+      await ensureDevServer(projectId);
+      const lines = (await devServerLogs()).split("\n");
       return {
         ok: true,
         logs: lines.slice(-maxLines).join("\n"),
@@ -345,7 +368,7 @@ export const createTools = (projectId: string, devPort: number) => {
       "Restart the dev server. Only needed after changing config the dev server reads at startup (next.config, env files, or newly installed dependencies) — ordinary file edits hot-reload on their own.",
     inputSchema: z.object({}),
     execute: async () => {
-      await restartDevServer(projectId, devPort);
+      await restartDevServer(projectId);
       return { ok: true };
     },
   });
