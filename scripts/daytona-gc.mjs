@@ -12,9 +12,10 @@
  *   node scripts/daytona-gc.mjs            # list, delete nothing
  *   node scripts/daytona-gc.mjs --delete   # delete the orphans it found
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Daytona } from "@daytonaio/sdk";
+import postgres from "postgres";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const LABEL = "aiBuilderProjectId";
@@ -35,19 +36,27 @@ if (!apiKey) {
   process.exit(1);
 }
 
+if (!process.env["DATABASE_URL"]) {
+  console.error("DATABASE_URL is not set in .env.local.");
+  process.exit(1);
+}
+
 const shouldDelete = process.argv.includes("--delete");
 const daytona = new Daytona({ apiKey });
 
-/** A project is live if its folder still holds metadata naming this sandbox. */
-const claimedBy = (projectId) => {
-  const file = path.join(ROOT, "projects", projectId, "project.json");
-  if (!existsSync(file)) return null;
-  try {
-    return JSON.parse(readFileSync(file, "utf8")).sandboxId ?? null;
-  } catch {
-    return null;
-  }
-};
+/**
+ * Which sandbox each project still claims. Read once, up front: a project that
+ * is gone from the database has nothing pointing at its sandbox any more, and
+ * that is exactly what makes the sandbox an orphan.
+ */
+const sql = postgres(process.env["DATABASE_URL"], { prepare: false });
+const claimedBy = new Map(
+  (await sql`select id, sandbox_id from projects`).map((row) => [
+    row.id,
+    row.sandbox_id,
+  ]),
+);
+await sql.end();
 
 const orphans = [];
 let total = 0;
@@ -57,7 +66,7 @@ for await (const sandbox of daytona.list({ labels: { [LABEL]: undefined } })) {
   if (!projectId) continue;
   total += 1;
 
-  const claimed = claimedBy(projectId) === sandbox.id;
+  const claimed = claimedBy.get(projectId) === sandbox.id;
   const age = sandbox.createdAt
     ? `${Math.round((Date.now() - Date.parse(sandbox.createdAt)) / 86_400_000)}d`
     : "?";
