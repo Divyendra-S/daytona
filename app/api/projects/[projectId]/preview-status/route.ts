@@ -71,7 +71,7 @@ export async function GET(
 
   // Cheap and does not start anything, so a sleeping sandbox can be reported as waking rather
   // than as a dev server that will not come up.
-  const state = await projectSandboxState(projectId);
+  const { state, detail } = await projectSandboxState(projectId);
 
   // Daytona does not have this sandbox any more — deleted from its dashboard, or
   // swept up by `scripts/daytona-gc.mjs`. Nothing here can bring it back, since
@@ -86,6 +86,7 @@ export async function GET(
       waking: false,
       proxyUrl: null,
       error: "This project's sandbox no longer exists.",
+      detail,
     });
   }
 
@@ -101,6 +102,7 @@ export async function GET(
       proxyUrl: null,
       error:
         "Cannot reach this project's sandbox. Check DAYTONA_API_KEY — a key from another account cannot see it.",
+      detail,
     });
   }
 

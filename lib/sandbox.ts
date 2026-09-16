@@ -320,15 +320,21 @@ export const touchProject = async (projectId: string) => {
     });
 };
 
-/** What state a project's sandbox is in, without starting it. */
-export const projectSandboxState = async (projectId: string) => {
+/**
+ * What state a project's sandbox is in, without starting it. `detail` carries
+ * what Daytona said when it could not be asked, which is the difference
+ * between "check your key" and an hour of guessing.
+ */
+export const projectSandboxState = async (
+  projectId: string,
+): Promise<{ state: string; detail?: string }> => {
   const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
     sandboxId: null,
   }));
-  if (!sandboxId) return "missing" as const;
+  if (!sandboxId) return { state: "missing" as const };
   return getDaytona()
     .get(sandboxId)
-    .then((sandbox) => sandbox.state ?? ("unknown" as const))
+    .then((sandbox) => ({ state: sandbox.state ?? ("unknown" as const) }))
     .catch((error: unknown) => {
       // Only a 404 means the sandbox is gone. Anything else — a key belonging
       // to another Daytona account, an outage, a rate limit — must not be
@@ -341,6 +347,18 @@ export const projectSandboxState = async (projectId: string) => {
       };
       const status =
         failure?.statusCode ?? failure?.status ?? failure?.response?.status;
-      return status === 404 ? ("missing" as const) : ("unreachable" as const);
+      // Carried back so the workspace can say what went wrong instead of
+      // leaving the operator to guess at someone else's environment.
+      const detail = [
+        status ? `HTTP ${status}` : null,
+        error instanceof Error ? error.message : String(error),
+      ]
+        .filter(Boolean)
+        .join(": ")
+        .slice(0, 300);
+
+      return status === 404
+        ? { state: "missing" as const, detail }
+        : { state: "unreachable" as const, detail };
     });
 };
