@@ -14,10 +14,10 @@
   // The builder answers on its own domain; previews are a separate Worker
   // (workers/preview-proxy) on a wildcard of their own.
   // "routes": [{ "pattern": "builder.example.com", "custom_domain": true }],
-  "vars": {
-    // Secrets (OPENROUTER_API_KEY, DAYTONA_API_KEY, DATABASE_URL) are set with
-    // `wrangler secret put`, never here — this file is committed.
-    "APP_HOSTS": "",
-    "PREVIEW_PROXY_DOMAIN": "",
-  },
+  // No `vars` block on purpose. Deploying replaces the Worker's plaintext
+  // variables with whatever this file lists, so an empty value here would blank
+  // the real one set in the dashboard. Encrypted secrets are left alone by a
+  // deploy, which is the other reason every value this app needs —
+  // DATABASE_URL, DAYTONA_API_KEY, OPENROUTER_API_KEY, APP_HOSTS,
+  // PREVIEW_PROXY_DOMAIN — belongs there as a Secret rather than a Variable.
 }
