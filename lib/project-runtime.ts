@@ -1,5 +1,3 @@
-import { mkdir } from "node:fs/promises";
-import { projectPaths } from "./project-paths";
 import {
   createProjectSandbox,
   openProject,
@@ -7,7 +5,7 @@ import {
 } from "./sandbox";
 import { TEMPLATE_REPO } from "./vars";
 
-export { isProjectId, projectPaths, safeSegments } from "./project-paths";
+export { isProjectId, safeSegments } from "./project-paths";
 
 export const shellQuote = (value: string): string =>
   `'${value.replace(/'/g, `'\\''`)}'`;
@@ -135,9 +133,6 @@ export const createProjectFiles = async (
   projectId: string,
   repoUrl?: string,
 ) => {
-  // The project's local folder holds its JSON state; its code lives in the sandbox.
-  await mkdir(projectPaths(projectId).root, { recursive: true });
-
   const { sandboxId, sandbox } = await createProjectSandbox(projectId);
 
   await runStep(

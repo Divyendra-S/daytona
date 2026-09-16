@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { NextResponse } from "next/server";
-import { projectPaths } from "@/lib/project-paths";
 import { createProjectFiles } from "@/lib/project-runtime";
 import {
   createConversation,
@@ -77,8 +75,7 @@ export async function POST(req: Request) {
 
   const projectId = randomUUID().slice(0, 8);
 
-  // Written before the sandbox exists so that a creation that fails half way
-  // still leaves a folder to clean up, and rewritten with the sandbox's id as
+  // Written before the sandbox exists, and rewritten with the sandbox's id as
   // soon as there is one — that id is the only way back to the project's code.
   const metadata: ProjectMetadata = {
     version: 5,
@@ -101,7 +98,6 @@ export async function POST(req: Request) {
     // The row goes too: a half-created project nobody can open would otherwise
     // sit on the home screen, one card for every attempt that failed.
     await deleteProject(projectId);
-    await rm(projectPaths(projectId).root, { recursive: true, force: true });
     return NextResponse.json(
       {
         error:

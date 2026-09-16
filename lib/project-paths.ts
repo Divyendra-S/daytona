@@ -1,20 +1,10 @@
-import path from "node:path";
-import { PROJECTS_DIR } from "./vars";
-
-/** Project ids become folder names, so anything else is rejected before it reaches a path. */
+/**
+ * Project ids reach a database query and a sandbox label, so anything that is
+ * not one is turned away before it gets there.
+ */
 const PROJECT_ID = /^[0-9a-f]{8}$/;
 
 export const isProjectId = (value: string) => PROJECT_ID.test(value);
-
-/**
- * A project's folder on this machine. It holds the project's JSON state and
- * nothing else: the code, its git history and everything that runs live in the
- * project's sandbox (see `lib/sandbox.ts`).
- */
-export const projectPaths = (projectId: string) => {
-  if (!isProjectId(projectId)) throw new Error("Invalid project id.");
-  return { root: path.join(PROJECTS_DIR, projectId) };
-};
 
 /**
  * Validate a project-relative path and split it into segments, rejecting

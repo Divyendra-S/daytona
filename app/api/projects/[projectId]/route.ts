@@ -1,7 +1,5 @@
-import { rm } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { authorizeProject } from "@/lib/project-access";
-import { projectPaths } from "@/lib/project-paths";
 import { deleteProject } from "@/lib/project-storage";
 import { deleteProjectSandbox } from "@/lib/sandbox";
 
@@ -23,7 +21,6 @@ export async function DELETE(
     // A sandbox that cannot be reached is left to `scripts/daytona-gc.mjs`.
   });
   await deleteProject(projectId);
-  await rm(projectPaths(projectId).root, { recursive: true, force: true });
 
   return NextResponse.json({ ok: true });
 }

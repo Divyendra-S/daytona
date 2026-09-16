@@ -4,6 +4,7 @@ import { ensurePreviewProxy } from "@/lib/preview-proxy";
 import {
   previewOrigin,
   projectSandboxState,
+  signedPreviewUrl,
   touchProject,
 } from "@/lib/sandbox";
 import {
@@ -35,18 +36,22 @@ const serverAnswers = async (projectId: string) => {
   );
 };
 
+/** The browser and this app share a machine only when the request arrives on one of these. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 /**
  * `up`: the dev server answers. `running`: a dev server is alive, so no answer means it is still
  * starting rather than stopped. `waking`: the sandbox itself is asleep or starting, which takes
  * a few seconds and must not look like a broken preview. `proxyUrl`: where the preview should
- * load the app from — the preview proxy, which adds the click-to-select bridge.
+ * load the app from — the preview proxy when it can be reached, the sandbox's own signed URL
+ * when the browser is somewhere else.
  *
  * A project whose sandbox has gone idle is started here: the preview must not depend on a
  * terminal tab having connected first. A dev server that started and then exited is only
  * reported, since restarting a crash on every poll would loop.
  */
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   const { projectId } = await params;
@@ -125,9 +130,21 @@ export async function GET(
     void ensureProductionServer(projectId).catch(() => {});
   }
 
-  const [up, proxyPort] = await Promise.all([
+  // The proxy listens on this machine's loopback, so it is only a preview the
+  // browser can load when the browser is on this machine too. A deployed build
+  // hands out the sandbox's signed URL instead: one port, short-lived, safe in
+  // an iframe — at the cost of the click-to-select bridge the proxy injects.
+  const local = LOCAL_HOSTS.has(
+    (req.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase(),
+  );
+
+  const [up, previewSrc] = await Promise.all([
     serverAnswers(projectId).catch(() => false),
-    ensurePreviewProxy(projectId).catch(() => null),
+    local
+      ? ensurePreviewProxy(projectId)
+          .then((port) => (port ? `http://${LOCAL_HOST}:${port}` : null))
+          .catch(() => null)
+      : signedPreviewUrl(projectId, SANDBOX_DEV_PORT).catch(() => null),
   ]);
 
   // The user is watching the preview, so the sandbox is in use even if nothing else says so.
@@ -137,9 +154,8 @@ export async function GET(
     up,
     running: up || devState === "running",
     waking: false,
-    // Without the proxy there is no preview: the sandbox is only reachable with a token the
-    // browser must never be given.
-    proxyUrl: proxyPort ? `http://${LOCAL_HOST}:${proxyPort}` : null,
+    // Named `proxyUrl` for the client, which only cares that it is where the preview loads.
+    proxyUrl: previewSrc,
   });
 }
 

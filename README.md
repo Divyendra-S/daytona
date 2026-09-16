@@ -2,8 +2,7 @@
 
 An open-source AI app builder. Describe what you want, and AI Builder builds it for you in real time — complete with a live preview, terminals, and one-click publishing.
 
-
-AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds and serves. Your computer runs the chat, the UI and the preview proxy, and keeps each project's metadata under `projects/<id>/`.
+AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds and serves. Your computer runs the chat, the UI and the preview proxy; each project's metadata, conversations and releases are rows in Postgres.
 
 > **The agent works in a sandbox, not on your computer.** Its commands, its file edits and your terminal tabs all run inside the project's own container, so an agent mistake cannot touch your machine. Sandboxes stop themselves after 15 minutes idle and cost disk only while stopped.
 
@@ -61,12 +60,12 @@ Open [http://localhost:3000](http://localhost:3000) to start building. AI Builde
 
 Both folders live inside the project's sandbox, and both ports are the sandbox's own — every project uses the same two, because every project has its own network.
 
-| | Dev | Production |
-|---|---|---|
-| Folder | `~/app` (a git repo) | `~/production` (a clone of it) |
-| Exists | from the moment the project does | created by the first publish |
-| Runs | `npm run dev` on port 3000 | `npm run build`, then `npm run start` on port 3001 |
-| Edited by | the agent | nothing — only publishes |
+|           | Dev                              | Production                                         |
+| --------- | -------------------------------- | -------------------------------------------------- |
+| Folder    | `~/app` (a git repo)             | `~/production` (a clone of it)                     |
+| Exists    | from the moment the project does | created by the first publish                       |
+| Runs      | `npm run dev` on port 3000       | `npm run build`, then `npm run start` on port 3001 |
+| Edited by | the agent                        | nothing — only publishes                           |
 
 **Creating** a project provisions a sandbox, clones the [Next.js + shadcn template](https://github.com/freestyle-sh/freestyle-base-nextjs-shadcn) (or a GitHub repo), runs `npm install`, and starts the dev server — about ten seconds altogether.
 
@@ -74,7 +73,7 @@ Both folders live inside the project's sandbox, and both ports are the sandbox's
 
 **Servers and terminals** live in the sandbox, not in AI Builder, so they survive AI Builder restarting: a dev server keeps running and a terminal tab reconnects to the shell it had. Opening a project wakes its sandbox if it went idle, which takes a few seconds and shows as "Waking the sandbox up…".
 
-**The preview** is served through a small proxy on `127.0.0.1` rather than loaded from the sandbox directly. The proxy injects the click-to-select bridge, and it keeps the sandbox's preview token — which authenticates *every* port of that sandbox — on the server, where the browser cannot reach it.
+**The preview** is served through a small proxy on `127.0.0.1` rather than loaded from the sandbox directly. The proxy injects the click-to-select bridge, and it keeps the sandbox's preview token — which authenticates _every_ port of that sandbox — on the server, where the browser cannot reach it.
 
 **State** — a project's metadata (including the id of its sandbox), its conversations and its releases are rows in Postgres (Supabase). The code itself lives in the sandbox, and nothing else lives on this machine.
 

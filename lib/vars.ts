@@ -1,12 +1,3 @@
-import path from "node:path";
-
-/**
- * Where a project's *metadata* lives, one folder each — see `projectPaths` in
- * project-paths.ts. The code itself lives in the project's Daytona sandbox,
- * not here. Ignored by this app's git and TypeScript config.
- */
-export const PROJECTS_DIR = path.join(process.cwd(), "projects");
-
 /** The template new projects start from. */
 export const TEMPLATE_REPO =
   "https://github.com/freestyle-sh/freestyle-base-nextjs-shadcn";
