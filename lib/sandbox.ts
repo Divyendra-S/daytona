@@ -50,6 +50,18 @@ const START_TIMEOUT = 180;
 
 const globals = globalThis as Record<string, unknown>;
 
+/**
+ * Whether a resolved sandbox may be kept for the next request.
+ *
+ * On a Worker it may not: an entry holds the connections its handle opened, and
+ * a Worker cannot use those while serving anyone else — the second request to
+ * reach a cached entry hangs instead of answering. Node keeps them, where
+ * re-resolving every sandbox on every request would be pure waste.
+ */
+const REUSABLE =
+  typeof navigator === "undefined" ||
+  navigator.userAgent !== "Cloudflare-Workers";
+
 /** Kept on globalThis so a hot reload of this module does not re-resolve every sandbox. */
 const cache: Map<string, Promise<Entry>> = (globals[
   "__aiBuilderSandboxes"
@@ -84,10 +96,12 @@ export const explainDaytonaError = (error: unknown) => {
   };
 };
 
+/**
+ * A client for the request being served. Not cached: a Worker may not reuse a
+ * connection opened while serving a different request, and this client holds
+ * them — cached, it serves one request per isolate and hangs on the rest.
+ */
 export const getDaytona = (): Daytona => {
-  const existing = globals["__aiBuilderDaytona"] as Daytona | undefined;
-  if (existing) return existing;
-
   const apiKey = process.env["DAYTONA_API_KEY"];
   if (!apiKey) {
     throw new Error(
@@ -101,9 +115,7 @@ export const getDaytona = (): Daytona => {
       `DAYTONA_API_KEY looks mangled (${keyShape()}): it should be the bare key and nothing else — no name, quotes or spaces.`,
     );
   }
-  const client = new Daytona({ apiKey });
-  globals["__aiBuilderDaytona"] = client;
-  return client;
+  return new Daytona({ apiKey });
 };
 
 /**
@@ -160,6 +172,8 @@ const openFromMetadata = async (projectId: string): Promise<Entry> => {
  * us recovers instead of wedging.
  */
 export const openProject = (projectId: string): Promise<ProjectSandbox> => {
+  if (!REUSABLE) return openFromMetadata(projectId);
+
   const current = cache.get(projectId);
 
   const next = (

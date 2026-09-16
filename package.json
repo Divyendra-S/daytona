@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start -H 127.0.0.1",
     "lint": "next lint",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "db:push": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs push",
     "db:import": "node --env-file=.env.local scripts/import-json-projects.mjs",
     "prettier": "prettier --check .",
@@ -24,6 +27,7 @@
     "@assistant-ui/react-ai-sdk": "1.3.9",
     "@assistant-ui/react-markdown": "0.12.5",
     "@daytonaio/sdk": "0.214.0",
+    "@opennextjs/cloudflare": "^1.20.6",
     "@openrouter/ai-sdk-provider": "2.10.0",
     "@radix-ui/react-avatar": "1.1.11",
     "@radix-ui/react-collapsible": "1.1.12",
@@ -63,7 +67,8 @@
     "prettier": "3.8.1",
     "prettier-plugin-tailwindcss": "0.7.2",
     "tailwindcss": "4.2.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "^4.132.0"
   },
   "pnpm": {
     "overrides": {

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { authorizeProject } from "@/lib/project-access";
-import { ensurePreviewProxy } from "@/lib/preview-proxy";
 import {
   previewOrigin,
   projectSandboxState,
@@ -143,7 +142,10 @@ export async function GET(
   const [up, previewSrc] = await Promise.all([
     serverAnswers(projectId).catch(() => false),
     local
-      ? ensurePreviewProxy(projectId)
+      ? // Imported only here, and only on this machine: it listens on a TCP
+        // socket, which a Worker has no way to do.
+        import("@/lib/preview-proxy")
+          .then((module) => module.ensurePreviewProxy(projectId))
           .then((port) => (port ? `http://${LOCAL_HOST}:${port}` : null))
           .catch(() => null)
       : signedPreviewUrl(projectId, SANDBOX_DEV_PORT).catch(() => null),

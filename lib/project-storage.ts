@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type UIMessage } from "ai";
-import { db } from "./db/client";
+import { getDb } from "./db/client";
 import { conversations, projects, releases } from "./db/schema";
 import {
   type ProjectConversationSummary,
@@ -84,7 +84,7 @@ const toMetadata = (
 export const readProjectMetadata = async (
   projectId: string,
 ): Promise<ProjectMetadata> => {
-  const [project] = await db
+  const [project] = await getDb()
     .select()
     .from(projects)
     .where(eq(projects.id, projectId));
@@ -92,12 +92,12 @@ export const readProjectMetadata = async (
   if (!project) throw new Error("Unknown project.");
 
   const [conversationRows, releaseRows] = await Promise.all([
-    db
+    getDb()
       .select(summaryColumns)
       .from(conversations)
       .where(eq(conversations.projectId, projectId))
       .orderBy(desc(conversations.updatedAt)),
-    db
+    getDb()
       .select()
       .from(releases)
       .where(eq(releases.projectId, projectId))
@@ -123,7 +123,7 @@ export const writeProjectMetadata = async (
     liveReleaseId: metadata.liveReleaseId,
   };
 
-  await db
+  await getDb()
     .insert(projects)
     .values(values)
     .onConflictDoUpdate({ target: projects.id, set: values });
@@ -137,18 +137,18 @@ export const writeProjectMetadata = async (
  * caller, because the row has to outlive the sandbox long enough to name it.
  */
 export const deleteProject = async (projectId: string) => {
-  await db.delete(projects).where(eq(projects.id, projectId));
+  await getDb().delete(projects).where(eq(projects.id, projectId));
 };
 
 /** Every project, newest first. */
 export const listProjects = async () => {
   const [projectRows, conversationRows, releaseRows] = await Promise.all([
-    db.select().from(projects).orderBy(desc(projects.createdAt)),
-    db
+    getDb().select().from(projects).orderBy(desc(projects.createdAt)),
+    getDb()
       .select(summaryColumns)
       .from(conversations)
       .orderBy(desc(conversations.updatedAt)),
-    db.select().from(releases).orderBy(desc(releases.createdAt)),
+    getDb().select().from(releases).orderBy(desc(releases.createdAt)),
   ]);
 
   // ponytail: rows filtered per project — fine for tens of projects, group
@@ -175,7 +175,7 @@ const deriveConversationTitle = (
 };
 
 const countConversations = (projectId: string) =>
-  db.$count(conversations, eq(conversations.projectId, projectId));
+  getDb().$count(conversations, eq(conversations.projectId, projectId));
 
 export const createConversation = async (
   projectId: string,
@@ -188,7 +188,7 @@ export const createConversation = async (
     initialTitle?.trim().replace(/\s+/g, " ").slice(0, 60) ||
     `Conversation ${(await countConversations(projectId)) + 1}`;
 
-  await db
+  await getDb()
     .insert(conversations)
     .values({ projectId, id: conversationId, title })
     .onConflictDoNothing();
@@ -202,7 +202,7 @@ export const readConversationMessages = async (
 ): Promise<UIMessage[]> => {
   assertConversationId(conversationId);
 
-  const [row] = await db
+  const [row] = await getDb()
     .select({ messages: conversations.messages })
     .from(conversations)
     .where(
@@ -223,7 +223,7 @@ export const saveConversationMessages = async (
 ) => {
   assertConversationId(conversationId);
 
-  const [existing] = await db
+  const [existing] = await getDb()
     .select({ title: conversations.title })
     .from(conversations)
     .where(
@@ -240,7 +240,7 @@ export const saveConversationMessages = async (
   );
   const updatedAt = new Date();
 
-  await db
+  await getDb()
     .insert(conversations)
     .values({ projectId, id: conversationId, title, messages, updatedAt })
     .onConflictDoUpdate({
@@ -255,15 +255,17 @@ export const addRelease = async (
   projectId: string,
   release: ProjectRelease,
 ) => {
-  await db.insert(releases).values({
-    projectId,
-    id: release.id,
-    message: release.message,
-    commit: release.commit,
-    state: release.state,
-    error: release.error,
-    createdAt: new Date(release.createdAt),
-  });
+  await getDb()
+    .insert(releases)
+    .values({
+      projectId,
+      id: release.id,
+      message: release.message,
+      commit: release.commit,
+      state: release.state,
+      error: release.error,
+      createdAt: new Date(release.createdAt),
+    });
 
   return readProjectMetadata(projectId);
 };
@@ -281,7 +283,7 @@ export const updateRelease = async (
   if (patch.createdAt !== undefined) set.createdAt = new Date(patch.createdAt);
 
   if (Object.keys(set).length > 0) {
-    await db
+    await getDb()
       .update(releases)
       .set(set)
       .where(
@@ -291,7 +293,7 @@ export const updateRelease = async (
 
   // Production serves this release from the moment it goes live.
   if (patch.state === "live") {
-    await db
+    await getDb()
       .update(projects)
       .set({ liveReleaseId: releaseId })
       .where(eq(projects.id, projectId));
@@ -305,7 +307,7 @@ export const addUsage = async (
   projectId: string,
   usage: Omit<ProjectUsage, "since">,
 ) => {
-  await db
+  await getDb()
     .update(projects)
     .set({
       inputTokens: sql`${projects.inputTokens} + ${usage.inputTokens}`,

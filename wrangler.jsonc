@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "runobi",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+  // `nodejs_compat` is not optional here: the Postgres driver opens a TCP
+  // socket, and the Daytona SDK is written for Node.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+  "observability": { "enabled": true },
+  // The builder answers on its own domain; previews are a separate Worker
+  // (workers/preview-proxy) on a wildcard of their own.
+  // "routes": [{ "pattern": "builder.example.com", "custom_domain": true }],
+  "vars": {
+    // Secrets (OPENROUTER_API_KEY, DAYTONA_API_KEY, DATABASE_URL) are set with
+    // `wrangler secret put`, never here — this file is committed.
+    "APP_HOSTS": "",
+    "PREVIEW_PROXY_DOMAIN": "",
+  },
+}
