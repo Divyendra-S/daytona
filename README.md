@@ -2,6 +2,7 @@
 
 An open-source AI app builder. Describe what you want, and AI Builder builds it for you in real time — complete with a live preview, terminals, and one-click publishing.
 
+
 AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds and serves. Your computer runs the chat, the UI and the preview proxy, and keeps each project's metadata under `projects/<id>/`.
 
 > **The agent works in a sandbox, not on your computer.** Its commands, its file edits and your terminal tabs all run inside the project's own container, so an agent mistake cannot touch your machine. Sandboxes stop themselves after 15 minutes idle and cost disk only while stopped.
