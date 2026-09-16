@@ -79,7 +79,9 @@ export const HomeWelcome: FC = () => {
         const failure = (await response.json().catch(() => null)) as {
           error?: string;
         } | null;
-        throw new Error(failure?.error ?? `Request failed (${response.status})`);
+        throw new Error(
+          failure?.error ?? `Request failed (${response.status})`,
+        );
       }
       window.dispatchEvent(new Event("ai-builder:projects-updated"));
     } catch (error) {
