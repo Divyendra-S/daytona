@@ -56,6 +56,34 @@ const cache: Map<string, Promise<Entry>> = (globals[
 ] as Map<string, Promise<Entry>>) ??
 (globals["__aiBuilderSandboxes"] = new Map());
 
+/**
+ * The key as this process loaded it, described without revealing it: enough
+ * to compare against the machine where it works (length, first characters).
+ */
+export const keyShape = () => {
+  const key = process.env["DAYTONA_API_KEY"] ?? "";
+  return `${key.length} characters, starting "${key.slice(0, 4)}"`;
+};
+
+/** What Daytona said — plus the key's shape when it was the key Daytona refused. */
+export const explainDaytonaError = (error: unknown) => {
+  const failure = error as {
+    statusCode?: number;
+    status?: number;
+    response?: { status?: number };
+  };
+  const status =
+    failure?.statusCode ?? failure?.status ?? failure?.response?.status;
+  const message = error instanceof Error ? error.message : String(error);
+  const refused = status === 401 || /invalid credentials/i.test(message);
+  return {
+    status,
+    message: refused
+      ? `${message} (DAYTONA_API_KEY as this deployment loaded it: ${keyShape()})`
+      : message,
+  };
+};
+
 export const getDaytona = (): Daytona => {
   const existing = globals["__aiBuilderDaytona"] as Daytona | undefined;
   if (existing) return existing;
@@ -64,6 +92,13 @@ export const getDaytona = (): Daytona => {
   if (!apiKey) {
     throw new Error(
       "DAYTONA_API_KEY is not set. Add it to .env.local — projects cannot run without a sandbox.",
+    );
+  }
+  // A key that works on one machine and reads "Invalid credentials" on another
+  // was almost always pasted there with its name, quotes or a stray space.
+  if (/[\s"'=]/.test(apiKey)) {
+    throw new Error(
+      `DAYTONA_API_KEY looks mangled (${keyShape()}): it should be the bare key and nothing else — no name, quotes or spaces.`,
     );
   }
   const client = new Daytona({ apiKey });
@@ -169,15 +204,19 @@ export const createProjectSandbox = async (projectId: string) => {
     autoArchiveInterval: AUTO_ARCHIVE_MINUTES,
   };
 
-  const sandbox = await (SANDBOX_SNAPSHOT
-    ? getDaytona().create(
-        { ...params, snapshot: SANDBOX_SNAPSHOT },
-        { timeout: START_TIMEOUT },
-      )
-    : getDaytona().create(
-        { ...params, image: SANDBOX_IMAGE, resources: SANDBOX_RESOURCES },
-        { timeout: START_TIMEOUT },
-      ));
+  const sandbox = await (
+    SANDBOX_SNAPSHOT
+      ? getDaytona().create(
+          { ...params, snapshot: SANDBOX_SNAPSHOT },
+          { timeout: START_TIMEOUT },
+        )
+      : getDaytona().create(
+          { ...params, image: SANDBOX_IMAGE, resources: SANDBOX_RESOURCES },
+          { timeout: START_TIMEOUT },
+        )
+  ).catch((error: unknown) => {
+    throw new Error(explainDaytonaError(error).message);
+  });
 
   const entry = await toEntry(sandbox);
   cache.set(projectId, Promise.resolve(entry));
@@ -340,19 +379,10 @@ export const projectSandboxState = async (
       // to another Daytona account, an outage, a rate limit — must not be
       // reported as deleted: that tells the user their work is unrecoverable
       // when it is still there, one environment variable away.
-      const failure = error as {
-        statusCode?: number;
-        status?: number;
-        response?: { status?: number };
-      };
-      const status =
-        failure?.statusCode ?? failure?.status ?? failure?.response?.status;
       // Carried back so the workspace can say what went wrong instead of
       // leaving the operator to guess at someone else's environment.
-      const detail = [
-        status ? `HTTP ${status}` : null,
-        error instanceof Error ? error.message : String(error),
-      ]
+      const { status, message } = explainDaytonaError(error);
+      const detail = [status ? `HTTP ${status}` : null, message]
         .filter(Boolean)
         .join(": ")
         .slice(0, 300);
