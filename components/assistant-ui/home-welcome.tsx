@@ -17,10 +17,17 @@ import type { ProjectItem } from "@/lib/project-types";
 import { type FC, useState } from "react";
 import { GithubIcon } from "lucide-react";
 
-/** Show what a visitor would see: production once published, dev otherwise. */
+/**
+ * What a visitor would see, for the card thumbnail: the published app.
+ *
+ * Only published projects get a live frame. Every project's sandbox sleeps when
+ * it goes idle, and framing a dev preview here would wake every sandbox at once
+ * just to draw the home screen — which is exactly what the idle timer exists to
+ * avoid. An unpublished project shows a placeholder until it is opened.
+ */
 function getPreviewUrl(project: ProjectItem): string | null {
-  if (project.liveReleaseId) return project.productionUrl;
-  return project.previewUrl || null;
+  if (project.liveReleaseId) return project.productionUrl || null;
+  return null;
 }
 
 export const HomeWelcome: FC = () => {

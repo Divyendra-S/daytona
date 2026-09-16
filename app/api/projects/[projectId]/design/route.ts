@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
@@ -12,9 +11,13 @@ import {
 import type { UsedFont } from "@/lib/figma/figma-paste";
 import { excludeFromGit } from "@/lib/git-exclude";
 import { generateLlmText } from "@/lib/llm-provider";
-import { projectPaths } from "@/lib/local-project";
 import { authorizeProject } from "@/lib/project-access";
-import { readProjectFile, resolveInApp } from "@/lib/project-files";
+import { openProject } from "@/lib/sandbox";
+import {
+  readProjectFile,
+  resolveInApp,
+  writeProjectFile,
+} from "@/lib/project-files";
 import { addUsage } from "@/lib/project-storage";
 
 /**
@@ -71,8 +74,13 @@ const readText = async (projectId: string, file: string) => {
 };
 
 const isFile = async (projectId: string, file: string) => {
-  const target = resolveInApp(projectId, file);
-  return Boolean(target && (await stat(target).catch(() => null))?.isFile());
+  const target = await resolveInApp(projectId, file);
+  if (!target) return false;
+  const { sandbox } = await openProject(projectId);
+  return sandbox.fs
+    .getFileDetails(target)
+    .then((info) => !info.isDir)
+    .catch(() => false);
 };
 
 /** The export target matching the project's own stack. */
@@ -150,7 +158,6 @@ const MISSING_IMAGE = "figma-image-unavailable";
  * into a blank box nobody is told about.
  */
 const saveImages = async (projectId: string, code: string, origin: string) => {
-  const { app } = projectPaths(projectId);
   let out = code;
   let missing = 0;
   /** Why the first unfetchable image failed, in the image route's own words. */
@@ -171,9 +178,9 @@ const saveImages = async (projectId: string, code: string, origin: string) => {
     const type = response.headers.get("content-type") ?? "image/png";
     const ext = type.split("/")[1]?.split(/[;+]/)[0] || "png";
     const publicPath = `/figma/${url.slice(-40)}.${ext}`;
-    await mkdir(path.join(app, "public", "figma"), { recursive: true });
-    await writeFile(
-      path.join(app, "public", publicPath),
+    await writeProjectFile(
+      projectId,
+      `public${publicPath}`,
       Buffer.from(await response.arrayBuffer()),
     );
     out = out.split(url).join(publicPath);
@@ -200,7 +207,6 @@ const DATA_URI =
  * content, so the same image captured twice is one file.
  */
 const saveDataUris = async (projectId: string, code: string) => {
-  const { app } = projectPaths(projectId);
   const saved = new Map<string, string>();
   for (const [uri, mime, data] of code.matchAll(DATA_URI)) {
     if (saved.has(uri)) continue;
@@ -211,8 +217,7 @@ const saveDataUris = async (projectId: string, code: string) => {
       .replace("jpeg", "jpg")
       .replace(/^(x-)?font-/, "");
     const publicPath = `/captures/${createHash("sha1").update(bytes).digest("hex").slice(0, 16)}.${ext}`;
-    await mkdir(path.join(app, "public", "captures"), { recursive: true });
-    await writeFile(path.join(app, "public", publicPath), bytes);
+    await writeProjectFile(projectId, `public${publicPath}`, bytes);
     saved.set(uri, publicPath);
   }
   let out = code;
@@ -316,9 +321,7 @@ export async function POST(
     const file = design.document
       ? `.adorable/captures/${stamp}-capture.html`
       : `.figma/${stamp}-${entryName(framework.id, design.title ?? "")}`;
-    const target = resolveInApp(projectId, file)!;
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, code);
+    await writeProjectFile(projectId, file, code);
     // Scratch for the agent, never part of the app: publishing must not commit it.
     await excludeFromGit(projectId, design.document ? ".adorable/" : ".figma/");
     return NextResponse.json({
@@ -451,7 +454,7 @@ ${compact}
     );
   }
 
-  await writeFile(resolveInApp(projectId, section.file)!, next);
+  await writeProjectFile(projectId, section.file, next);
   return NextResponse.json({
     ok: true,
     name: section.name,

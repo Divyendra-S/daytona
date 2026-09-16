@@ -1,0 +1,333 @@
+import { Daytona, type Sandbox } from "@daytonaio/sdk";
+import { readProjectMetadata } from "./project-storage";
+import {
+  AUTO_ARCHIVE_MINUTES,
+  AUTO_STOP_MINUTES,
+  SANDBOX_IMAGE,
+  SANDBOX_LABEL,
+  SANDBOX_RESOURCES,
+  SANDBOX_SNAPSHOT,
+} from "./vars";
+
+/**
+ * A project's Daytona sandbox: where its code lives, where every command runs,
+ * and where its dev and production servers listen.
+ *
+ * Everything that touches a project's code goes through this module. A sandbox
+ * is long-lived and one-per-project, so git history, installed dependencies and
+ * published releases survive between sessions; Daytona stops it when it goes
+ * idle and starts it again on the next request, which is what `openProject`
+ * quietly waits for.
+ */
+
+/** Resolved once per sandbox: which absolute paths its code lives at. */
+export type ProjectSandbox = {
+  sandbox: Sandbox;
+  /** The sandbox user's home directory, e.g. `/root`. */
+  root: string;
+  /** The git repo the agent edits and the dev server serves. */
+  app: string;
+  /** A clone of `app` that publishing builds and serves. */
+  production: string;
+};
+
+type Entry = ProjectSandbox & {
+  /** When this entry's sandbox was last confirmed to be running. */
+  verifiedAt: number;
+  /** Preview origins by port, cached because each one is an API round trip. */
+  previews: Map<number, { url: string; token: string }>;
+};
+
+/**
+ * How long a "the sandbox is running" check is trusted for. Daytona can stop
+ * an idle sandbox behind our back, so this is re-checked — but not on every
+ * request, which would add a round trip to each one.
+ */
+const FRESH_MS = 20_000;
+
+/** How long to wait for a stopped or archived sandbox to come back, in seconds. */
+const START_TIMEOUT = 180;
+
+const globals = globalThis as Record<string, unknown>;
+
+/** Kept on globalThis so a hot reload of this module does not re-resolve every sandbox. */
+const cache: Map<string, Promise<Entry>> = (globals[
+  "__aiBuilderSandboxes"
+] as Map<string, Promise<Entry>>) ??
+(globals["__aiBuilderSandboxes"] = new Map());
+
+export const getDaytona = (): Daytona => {
+  const existing = globals["__aiBuilderDaytona"] as Daytona | undefined;
+  if (existing) return existing;
+
+  const apiKey = process.env["DAYTONA_API_KEY"];
+  if (!apiKey) {
+    throw new Error(
+      "DAYTONA_API_KEY is not set. Add it to .env.local — projects cannot run without a sandbox.",
+    );
+  }
+  const client = new Daytona({ apiKey });
+  globals["__aiBuilderDaytona"] = client;
+  return client;
+};
+
+/**
+ * Bring a sandbox back if Daytona stopped or archived it while we were away.
+ * Returns whether it had to be started, which invalidates anything derived from
+ * the sandbox's old run.
+ */
+const ensureStarted = async (sandbox: Sandbox) => {
+  await sandbox.refreshData();
+  if (sandbox.state === "started") return false;
+
+  if (
+    sandbox.state === "stopped" ||
+    sandbox.state === "archived" ||
+    sandbox.state === "paused"
+  ) {
+    await sandbox.start(START_TIMEOUT);
+  }
+  await sandbox.waitUntilStarted(START_TIMEOUT);
+  return true;
+};
+
+const toEntry = async (sandbox: Sandbox): Promise<Entry> => {
+  const root = (await sandbox.getUserRootDir()) ?? "/root";
+  return {
+    sandbox,
+    root,
+    app: `${root}/app`,
+    production: `${root}/production`,
+    verifiedAt: Date.now(),
+    previews: new Map(),
+  };
+};
+
+const openFromMetadata = async (projectId: string): Promise<Entry> => {
+  const { sandboxId } = await readProjectMetadata(projectId);
+  if (!sandboxId) {
+    throw new Error(
+      "This project has no sandbox. It was created before the move to Daytona and its code is still only on this machine.",
+    );
+  }
+  const sandbox = await getDaytona().get(sandboxId);
+  await ensureStarted(sandbox);
+  return toEntry(sandbox);
+};
+
+/**
+ * The project's sandbox, running and ready.
+ *
+ * Idempotent and safe to call concurrently — many routes call it at once, and
+ * they share one in-flight promise rather than each starting the sandbox. A
+ * cached sandbox is re-checked once its liveness goes stale, and re-opened from
+ * scratch if that check fails, so a sandbox deleted or recreated out from under
+ * us recovers instead of wedging.
+ */
+export const openProject = (projectId: string): Promise<ProjectSandbox> => {
+  const current = cache.get(projectId);
+
+  const next = (
+    current
+      ? current.then(async (entry) => {
+          if (Date.now() - entry.verifiedAt < FRESH_MS) return entry;
+          // A sandbox that had to be restarted issues new preview tokens, and
+          // the old ones now answer 401 — so everything derived from the
+          // previous run is dropped rather than served as a broken preview.
+          if (await ensureStarted(entry.sandbox)) forgetPreviewUrls(projectId);
+          entry.verifiedAt = Date.now();
+          return entry;
+        })
+      : Promise.reject(new Error("not cached"))
+  ).catch(() => openFromMetadata(projectId));
+
+  cache.set(projectId, next);
+  next.catch(() => {
+    // A failed open must not be cached, or the project never recovers.
+    if (cache.get(projectId) === next) cache.delete(projectId);
+  });
+  return next;
+};
+
+/** The project's sandbox paths, without the handle. */
+export const sandboxPaths = async (projectId: string) => {
+  const { root, app, production } = await openProject(projectId);
+  return { root, app, production };
+};
+
+/**
+ * Create a project's sandbox. Returns its id, which the caller stores in the
+ * project's metadata — that id is the only way back to it.
+ *
+ * The new sandbox is cached immediately, so the clone and install that follow
+ * do not have to read metadata that has not been written yet.
+ */
+export const createProjectSandbox = async (projectId: string) => {
+  const params = {
+    labels: { [SANDBOX_LABEL]: projectId },
+    autoStopInterval: AUTO_STOP_MINUTES,
+    autoArchiveInterval: AUTO_ARCHIVE_MINUTES,
+  };
+
+  const sandbox = await (SANDBOX_SNAPSHOT
+    ? getDaytona().create(
+        { ...params, snapshot: SANDBOX_SNAPSHOT },
+        { timeout: START_TIMEOUT },
+      )
+    : getDaytona().create(
+        { ...params, image: SANDBOX_IMAGE, resources: SANDBOX_RESOURCES },
+        { timeout: START_TIMEOUT },
+      ));
+
+  const entry = await toEntry(sandbox);
+  cache.set(projectId, Promise.resolve(entry));
+  return { sandboxId: sandbox.id, sandbox: entry as ProjectSandbox };
+};
+
+/** Forget a project's cached sandbox, so the next call re-reads its metadata. */
+export const forgetProjectSandbox = (projectId: string) => {
+  cache.delete(projectId);
+  forgetPreviewUrls(projectId);
+};
+
+/**
+ * How many times a project's sandbox has been seen to start. Anything derived
+ * from a sandbox's previous run — preview tokens, terminal sessions, running
+ * servers — is void once this changes, because a restarted sandbox keeps its
+ * disk but not a single running process.
+ */
+const generations: Map<string, number> =
+  (globals["__aiBuilderSandboxRuns"] as Map<string, number>) ??
+  (globals["__aiBuilderSandboxRuns"] = new Map());
+
+export const sandboxGeneration = (projectId: string) =>
+  generations.get(projectId) ?? 0;
+
+/** Drop everything cached from a project's previous sandbox run. */
+const forgetPreviewUrls = (projectId: string) => {
+  generations.set(projectId, sandboxGeneration(projectId) + 1);
+  void cache
+    .get(projectId)
+    ?.then((entry) => entry.previews.clear())
+    .catch(() => {});
+  for (const id of signedUrls.keys()) {
+    if (id.startsWith(`${projectId}:`)) signedUrls.delete(id);
+  }
+};
+
+/** Delete a project's sandbox and everything in it. There is no undo. */
+export const deleteProjectSandbox = async (projectId: string) => {
+  const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
+    sandboxId: null,
+  }));
+  forgetProjectSandbox(projectId);
+  if (!sandboxId) return;
+  await getDaytona()
+    .get(sandboxId)
+    .then((sandbox) => sandbox.delete())
+    .catch(() => {
+      // Already gone, or never created.
+    });
+};
+
+/**
+ * Where a port inside the sandbox is reachable from here, and the token that
+ * authenticates it.
+ *
+ * SECURITY: the token authenticates every port of the sandbox, including its
+ * own toolbox API. It is server-side only — never put it in a response body, a
+ * redirect, or anything the browser can read. Use `signedPreviewUrl` for that.
+ */
+export const previewOrigin = async (projectId: string, port: number) => {
+  const entry = (await openProject(projectId)) as Entry;
+  const cached = entry.previews.get(port);
+  if (cached) return cached;
+
+  const { url, token } = await entry.sandbox.getPreviewLink(port);
+  const link = { url: url.replace(/\/$/, ""), token };
+  entry.previews.set(port, link);
+  return link;
+};
+
+/**
+ * A preview URL the browser may load directly: scoped to one port, carrying
+ * its own short-lived token, and safe to hand out.
+ */
+export const signedPreviewUrl = async (
+  projectId: string,
+  port: number,
+  expiresInSeconds = SIGNED_URL_SECONDS,
+) => {
+  const { sandbox } = await openProject(projectId);
+  const { url } = await sandbox.getSignedPreviewUrl(port, expiresInSeconds);
+  return url;
+};
+
+/** Signed URLs by `projectId:port`, so listing projects is not a burst of signing calls. */
+const signedUrls: Map<string, { url: string; expiresAt: number }> =
+  (globals["__aiBuilderSignedUrls"] as Map<
+    string,
+    { url: string; expiresAt: number }
+  >) ?? (globals["__aiBuilderSignedUrls"] = new Map());
+
+const SIGNED_URL_SECONDS = 3600;
+
+/**
+ * A signed preview URL for a project that may well be asleep — **without
+ * waking it**.
+ *
+ * Listing projects must not start sandboxes: the home screen shows every
+ * project at once, and starting all of them would undo the idle auto-stop that
+ * keeps the bill near zero. Signing a URL only needs the sandbox record, not a
+ * running sandbox, so this asks Daytona for the sandbox and signs. A URL for a
+ * stopped sandbox simply does not answer until something starts it.
+ */
+export const dormantPreviewUrl = async (projectId: string, port: number) => {
+  const id = `${projectId}:${port}`;
+  const cached = signedUrls.get(id);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
+    sandboxId: null,
+  }));
+  if (!sandboxId) return "";
+
+  const url = await getDaytona()
+    .get(sandboxId)
+    .then((sandbox) => sandbox.getSignedPreviewUrl(port, SIGNED_URL_SECONDS))
+    .then((signed) => signed.url)
+    .catch(() => "");
+
+  if (url) {
+    // Re-signed a few minutes early, so a URL handed out now outlives the page.
+    signedUrls.set(id, {
+      url,
+      expiresAt: Date.now() + (SIGNED_URL_SECONDS - 300) * 1000,
+    });
+  }
+  return url;
+};
+
+/**
+ * Tell Daytona the project is in use, so its idle timer does not stop the
+ * sandbox out from under someone who is still working. Best-effort.
+ */
+export const touchProject = async (projectId: string) => {
+  await openProject(projectId)
+    .then(({ sandbox }) => sandbox.refreshActivity())
+    .catch(() => {
+      // Keeping a sandbox awake is never worth failing a request over.
+    });
+};
+
+/** What state a project's sandbox is in, without starting it. */
+export const projectSandboxState = async (projectId: string) => {
+  const { sandboxId } = await readProjectMetadata(projectId).catch(() => ({
+    sandboxId: null,
+  }));
+  if (!sandboxId) return "missing" as const;
+  return getDaytona()
+    .get(sandboxId)
+    .then((sandbox) => sandbox.state ?? ("unknown" as const))
+    .catch(() => "missing" as const);
+};

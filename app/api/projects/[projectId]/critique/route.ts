@@ -1,9 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { excludeFromGit } from "@/lib/git-exclude";
 import { authorizeProject } from "@/lib/project-access";
-import { resolveInApp } from "@/lib/project-files";
+import { writeProjectFile } from "@/lib/project-files";
 
 /**
  * The taste rules a design critique scores against, written into the project for the agent.
@@ -69,9 +67,7 @@ export async function POST(
   if (!(await authorizeProject(projectId))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  const target = resolveInApp(projectId, RULES_FILE)!;
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, RULES);
+  await writeProjectFile(projectId, RULES_FILE, RULES);
   await excludeFromGit(projectId, ".adorable/");
   return NextResponse.json({ ok: true, rulesFile: RULES_FILE });
 }
