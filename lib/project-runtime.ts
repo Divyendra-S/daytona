@@ -1,6 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { projectPaths } from "./project-paths";
-import { createProjectSandbox, openProject } from "./sandbox";
+import {
+  createProjectSandbox,
+  openProject,
+  type ProjectSandbox,
+} from "./sandbox";
 import { TEMPLATE_REPO } from "./vars";
 
 export { isProjectId, projectPaths, safeSegments } from "./project-paths";
@@ -82,6 +86,45 @@ export const runStep = async (
 };
 
 /**
+ * The home page a template project starts with.
+ *
+ * The template's own `app/page.tsx` is a Freestyle logo — a cloud shape — at
+ * 10% opacity on an otherwise empty page. In the preview that reads as a
+ * broken or still-loading frame showing "some cloud icon", not as a running
+ * app, and nothing tells the user the sandbox is fine. This page says so in
+ * words, and is replaced the moment the agent builds something.
+ */
+export const STARTER_PAGE = `export default function Home() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center gap-3 p-8 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">Your app is running</h1>
+      <p className="max-w-md text-sm text-muted-foreground">
+        This is the starter home page. Describe what you want to build in the
+        chat and it will take shape here.
+      </p>
+    </main>
+  );
+}
+`;
+
+/**
+ * Put the starter home page in place of the template's placeholder, and drop
+ * the logo it rendered so nothing else references it. Runs before the initial
+ * commit, so the project's history starts from the page the user sees.
+ */
+export const installStarterPage = async (sandbox: ProjectSandbox) => {
+  await sandbox.sandbox.fs.uploadFile(
+    Buffer.from(STARTER_PAGE, "utf8"),
+    `${sandbox.app}/app/page.tsx`,
+  );
+  await sandbox.sandbox.fs
+    .deleteFile(`${sandbox.app}/public/placeholder-freestyle-logo.svg`)
+    .catch(() => {
+      // A template without the logo has nothing to remove.
+    });
+};
+
+/**
  * Give a new project a sandbox and fill it: the template as a fresh repo, or a
  * public git project with its history kept, then its dependencies.
  *
@@ -106,6 +149,7 @@ export const createProjectFiles = async (
   );
 
   if (!repoUrl) {
+    await installStarterPage(sandbox);
     await runStep(
       "Repository setup",
       projectId,
