@@ -14,10 +14,10 @@ export const MODELS = [
     contextTokens: 262_144,
   },
   {
-    id: "anthropic/claude-sonnet-5",
-    name: "Claude Sonnet 5",
-    tag: "Anthropic",
-    contextTokens: 1_000_000,
+    id: "openai/gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    tag: "OpenAI",
+    contextTokens: 1_050_000,
   },
   {
     id: "openai/gpt-5.5",
@@ -44,9 +44,27 @@ export const MODELS = [
     contextTokens: 1_024_000,
   },
   {
-    id: "moonshotai/kimi-k3",
-    name: "Kimi K3",
-    tag: "Moonshot",
+    id: "deepseek/deepseek-v4.1-flash",
+    name: "DeepSeek V4.1 Flash",
+    tag: "DeepSeek",
+    contextTokens: 1_048_576,
+  },
+  {
+    id: "xiaomi/mimo-v2.5",
+    name: "MiMo-V2.5",
+    tag: "Xiaomi",
+    contextTokens: 1_050_000,
+  },
+  {
+    id: "z-ai/glm-5.3-flash",
+    name: "GLM 5.3 Flash",
+    tag: "Z.ai",
+    contextTokens: 1_310_720,
+  },
+  {
+    id: "tencent/hy4-preview",
+    name: "Hy4 Preview",
+    tag: "Tencent",
     contextTokens: 1_048_576,
   },
 ] as const;

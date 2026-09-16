@@ -1,116 +1,157 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { type UIMessage } from "ai";
-import { isProjectId, projectPaths } from "./project-paths";
+import { db } from "./db/client";
+import { conversations, projects, releases } from "./db/schema";
 import {
-  EMPTY_USAGE,
   type ProjectConversationSummary,
   type ProjectMetadata,
   type ProjectRelease,
   type ProjectUsage,
 } from "./project-types";
-import { PROJECTS_DIR } from "./vars";
 
 /**
- * A project's state is JSON in its folder, next to its app: `project.json`
- * for metadata and `conversations/<id>.json` for each conversation.
+ * A project's state lives in Postgres (Supabase): one row per project, per
+ * release and per conversation, the conversation's messages kept as JSON. The
+ * code itself lives in the project's Daytona sandbox (see `lib/sandbox.ts`),
+ * which the project row points at.
  */
-const metadataPath = (projectId: string) =>
-  path.join(projectPaths(projectId).root, "project.json");
 
-/** Conversation ids are generated UUIDs, and become file names. */
+type ProjectRow = typeof projects.$inferSelect;
+type ReleaseRow = typeof releases.$inferSelect;
+
+/** Conversations are listed without their messages, which are the bulk of a row. */
+const summaryColumns = {
+  projectId: conversations.projectId,
+  id: conversations.id,
+  title: conversations.title,
+  createdAt: conversations.createdAt,
+  updatedAt: conversations.updatedAt,
+};
+
+type ConversationSummaryRow = {
+  [K in keyof typeof summaryColumns]: (typeof conversations.$inferSelect)[K];
+};
+
+/** Conversation ids are generated UUIDs; anything else never reaches a query. */
 const CONVERSATION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-const conversationPath = (projectId: string, conversationId: string) => {
+const assertConversationId = (conversationId: string) => {
   if (!CONVERSATION_ID.test(conversationId)) {
     throw new Error("Invalid conversation id.");
   }
-  return path.join(
-    projectPaths(projectId).root,
-    "conversations",
-    `${conversationId}.json`,
-  );
 };
 
-/** Write through a temp file and rename, so a reader never sees half a file. */
-const writeJson = async (file: string, value: unknown) => {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify(value, null, 2));
-  await rename(temp, file);
-};
+const toSummary = (
+  row: ConversationSummaryRow,
+): ProjectConversationSummary => ({
+  id: row.id,
+  title: row.title,
+  createdAt: row.createdAt.toISOString(),
+  updatedAt: row.updatedAt.toISOString(),
+});
 
-/**
- * A project's metadata, brought up to the current shape.
- *
- * Version 4 kept the project's code on this machine and addressed its servers
- * by port. Version 5 keeps the code in a Daytona sandbox instead. A v4 project
- * is readable — so it still lists, and its conversations still open — but it
- * has no sandbox, and anything that needs to run its code says so rather than
- * failing obscurely.
- */
-const migrate = (
-  stored: ProjectMetadata & { version: number },
-): ProjectMetadata =>
-  stored.version >= 5
-    ? stored
-    : { ...stored, version: 5, sandboxId: stored.sandboxId ?? null };
+const toRelease = (row: ReleaseRow): ProjectRelease => ({
+  id: row.id,
+  message: row.message,
+  createdAt: row.createdAt.toISOString(),
+  commit: row.commit,
+  state: row.state,
+  error: row.error,
+});
+
+const toMetadata = (
+  project: ProjectRow,
+  conversationRows: ConversationSummaryRow[],
+  releaseRows: ReleaseRow[],
+): ProjectMetadata => ({
+  version: 5,
+  name: project.name,
+  createdAt: project.createdAt.toISOString(),
+  sandboxId: project.sandboxId,
+  conversations: conversationRows.map(toSummary),
+  releases: releaseRows.map(toRelease),
+  liveReleaseId: project.liveReleaseId,
+  usage: {
+    inputTokens: project.inputTokens,
+    outputTokens: project.outputTokens,
+    cost: project.cost,
+    requests: project.requests,
+    since: project.usageSince?.toISOString() ?? null,
+  },
+});
 
 export const readProjectMetadata = async (
   projectId: string,
-): Promise<ProjectMetadata> =>
-  migrate(
-    JSON.parse(
-      await readFile(metadataPath(projectId), "utf8"),
-    ) as ProjectMetadata & { version: number },
-  );
+): Promise<ProjectMetadata> => {
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId));
 
+  if (!project) throw new Error("Unknown project.");
+
+  const [conversationRows, releaseRows] = await Promise.all([
+    db
+      .select(summaryColumns)
+      .from(conversations)
+      .where(eq(conversations.projectId, projectId))
+      .orderBy(desc(conversations.updatedAt)),
+    db
+      .select()
+      .from(releases)
+      .where(eq(releases.projectId, projectId))
+      .orderBy(desc(releases.createdAt)),
+  ]);
+
+  return toMetadata(project, conversationRows, releaseRows);
+};
+
+/**
+ * Create or update a project's own row. Conversations and releases are rows of
+ * their own, written by the functions below — this does not touch them.
+ */
 export const writeProjectMetadata = async (
   projectId: string,
   metadata: ProjectMetadata,
 ) => {
-  await writeJson(metadataPath(projectId), metadata);
+  const values = {
+    id: projectId,
+    name: metadata.name,
+    createdAt: new Date(metadata.createdAt),
+    sandboxId: metadata.sandboxId,
+    liveReleaseId: metadata.liveReleaseId,
+  };
+
+  await db
+    .insert(projects)
+    .values(values)
+    .onConflictDoUpdate({ target: projects.id, set: values });
+
   return metadata;
 };
 
 /** Every project, newest first. */
 export const listProjects = async () => {
-  const entries = await readdir(PROJECTS_DIR).catch(() => [] as string[]);
-  const projects = await Promise.all(
-    entries.filter(isProjectId).map(async (id) => {
-      const metadata = await readProjectMetadata(id).catch(() => null);
-      return metadata ? { id, metadata } : null;
-    }),
-  );
-  return projects
-    .filter((project) => project !== null)
-    .sort((a, b) => b.metadata.createdAt.localeCompare(a.metadata.createdAt));
-};
+  const [projectRows, conversationRows, releaseRows] = await Promise.all([
+    db.select().from(projects).orderBy(desc(projects.createdAt)),
+    db
+      .select(summaryColumns)
+      .from(conversations)
+      .orderBy(desc(conversations.updatedAt)),
+    db.select().from(releases).orderBy(desc(releases.createdAt)),
+  ]);
 
-/**
- * One queue per project, so concurrent read-transform-writes — a chat saving
- * while a release settles — cannot overwrite each other.
- */
-const metadataQueues = new Map<string, Promise<unknown>>();
-
-const updateProjectMetadata = (
-  projectId: string,
-  update: (metadata: ProjectMetadata) => ProjectMetadata,
-) => {
-  const next = (metadataQueues.get(projectId) ?? Promise.resolve()).then(
-    async () =>
-      writeProjectMetadata(
-        projectId,
-        update(await readProjectMetadata(projectId)),
-      ),
-  );
-  metadataQueues.set(
-    projectId,
-    next.catch(() => {}),
-  );
-  return next;
+  // ponytail: rows filtered per project — fine for tens of projects, group
+  // them into a Map if a user ever has hundreds.
+  return projectRows.map((project) => ({
+    id: project.id,
+    metadata: toMetadata(
+      project,
+      conversationRows.filter((row) => row.projectId === project.id),
+      releaseRows.filter((row) => row.projectId === project.id),
+    ),
+  }));
 };
 
 const deriveConversationTitle = (
@@ -124,119 +165,145 @@ const deriveConversationTitle = (
   return clean ? clean.slice(0, 60) : fallback;
 };
 
+const countConversations = (projectId: string) =>
+  db.$count(conversations, eq(conversations.projectId, projectId));
+
 export const createConversation = async (
   projectId: string,
   conversationId: string,
   initialTitle?: string,
 ) => {
-  const file = conversationPath(projectId, conversationId);
-  const now = new Date().toISOString();
+  assertConversationId(conversationId);
 
-  const [metadata] = await Promise.all([
-    updateProjectMetadata(projectId, (current) => ({
-      ...current,
-      conversations: [
-        {
-          id: conversationId,
-          title:
-            initialTitle?.trim().replace(/\s+/g, " ").slice(0, 60) ||
-            `Conversation ${current.conversations.length + 1}`,
-          createdAt: now,
-          updatedAt: now,
-        },
-        ...current.conversations,
-      ],
-    })),
-    writeJson(file, []),
-  ]);
+  const title =
+    initialTitle?.trim().replace(/\s+/g, " ").slice(0, 60) ||
+    `Conversation ${(await countConversations(projectId)) + 1}`;
 
-  return metadata;
+  await db
+    .insert(conversations)
+    .values({ projectId, id: conversationId, title })
+    .onConflictDoNothing();
+
+  return readProjectMetadata(projectId);
 };
 
 export const readConversationMessages = async (
   projectId: string,
   conversationId: string,
-): Promise<UIMessage[]> =>
-  JSON.parse(
-    await readFile(conversationPath(projectId, conversationId), "utf8"),
-  ) as UIMessage[];
+): Promise<UIMessage[]> => {
+  assertConversationId(conversationId);
+
+  const [row] = await db
+    .select({ messages: conversations.messages })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.projectId, projectId),
+        eq(conversations.id, conversationId),
+      ),
+    );
+
+  if (!row) throw new Error("Unknown conversation.");
+  return row.messages;
+};
 
 export const saveConversationMessages = async (
   projectId: string,
   conversationId: string,
   messages: UIMessage[],
 ) => {
-  const file = conversationPath(projectId, conversationId);
-  const now = new Date().toISOString();
+  assertConversationId(conversationId);
 
-  const [metadata] = await Promise.all([
-    updateProjectMetadata(projectId, (current) => {
-      const existing = current.conversations.find(
-        (conversation) => conversation.id === conversationId,
-      );
-      const summary: ProjectConversationSummary = {
-        id: conversationId,
-        title: deriveConversationTitle(
-          messages,
-          existing?.title ?? `Conversation ${current.conversations.length + 1}`,
-        ),
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      };
+  const [existing] = await db
+    .select({ title: conversations.title })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.projectId, projectId),
+        eq(conversations.id, conversationId),
+      ),
+    );
 
-      return {
-        ...current,
-        conversations: [
-          summary,
-          ...current.conversations.filter(
-            (conversation) => conversation.id !== conversationId,
-          ),
-        ],
-      };
-    }),
-    writeJson(file, messages),
-  ]);
+  const title = deriveConversationTitle(
+    messages,
+    existing?.title ??
+      `Conversation ${(await countConversations(projectId)) + 1}`,
+  );
+  const updatedAt = new Date();
 
-  return metadata;
+  await db
+    .insert(conversations)
+    .values({ projectId, id: conversationId, title, messages, updatedAt })
+    .onConflictDoUpdate({
+      target: [conversations.projectId, conversations.id],
+      set: { title, messages, updatedAt },
+    });
+
+  return readProjectMetadata(projectId);
 };
 
-export const addRelease = (projectId: string, release: ProjectRelease) =>
-  updateProjectMetadata(projectId, (current) => ({
-    ...current,
-    releases: [release, ...current.releases].slice(0, 50),
-  }));
+export const addRelease = async (
+  projectId: string,
+  release: ProjectRelease,
+) => {
+  await db.insert(releases).values({
+    projectId,
+    id: release.id,
+    message: release.message,
+    commit: release.commit,
+    state: release.state,
+    error: release.error,
+    createdAt: new Date(release.createdAt),
+  });
 
-export const updateRelease = (
+  return readProjectMetadata(projectId);
+};
+
+export const updateRelease = async (
   projectId: string,
   releaseId: string,
   patch: Partial<ProjectRelease>,
-) =>
-  updateProjectMetadata(projectId, (current) => ({
-    ...current,
-    releases: current.releases.map((release) =>
-      release.id === releaseId ? { ...release, ...patch } : release,
-    ),
-    liveReleaseId: patch.state === "live" ? releaseId : current.liveReleaseId,
-  }));
+) => {
+  const set: Partial<typeof releases.$inferInsert> = {};
+  if (patch.message !== undefined) set.message = patch.message;
+  if (patch.commit !== undefined) set.commit = patch.commit;
+  if (patch.state !== undefined) set.state = patch.state;
+  if (patch.error !== undefined) set.error = patch.error;
+  if (patch.createdAt !== undefined) set.createdAt = new Date(patch.createdAt);
 
-export const renameProject = (projectId: string, name: string) =>
-  updateProjectMetadata(projectId, (current) => ({ ...current, name }));
+  if (Object.keys(set).length > 0) {
+    await db
+      .update(releases)
+      .set(set)
+      .where(
+        and(eq(releases.projectId, projectId), eq(releases.id, releaseId)),
+      );
+  }
+
+  // Production serves this release from the moment it goes live.
+  if (patch.state === "live") {
+    await db
+      .update(projects)
+      .set({ liveReleaseId: releaseId })
+      .where(eq(projects.id, projectId));
+  }
+
+  return readProjectMetadata(projectId);
+};
 
 /** Add one model call's tokens and cost to the project's running total. */
-export const addUsage = (
+export const addUsage = async (
   projectId: string,
   usage: Omit<ProjectUsage, "since">,
-) =>
-  updateProjectMetadata(projectId, (current) => {
-    const total = current.usage ?? EMPTY_USAGE;
-    return {
-      ...current,
-      usage: {
-        inputTokens: total.inputTokens + usage.inputTokens,
-        outputTokens: total.outputTokens + usage.outputTokens,
-        cost: total.cost + usage.cost,
-        requests: total.requests + usage.requests,
-        since: total.since ?? new Date().toISOString(),
-      },
-    };
-  });
+) => {
+  await db
+    .update(projects)
+    .set({
+      inputTokens: sql`${projects.inputTokens} + ${usage.inputTokens}`,
+      outputTokens: sql`${projects.outputTokens} + ${usage.outputTokens}`,
+      cost: sql`${projects.cost} + ${usage.cost}`,
+      requests: sql`${projects.requests} + ${usage.requests}`,
+      usageSince: sql`coalesce(${projects.usageSince}, now())`,
+    })
+    .where(eq(projects.id, projectId));
+};

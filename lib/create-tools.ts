@@ -14,6 +14,40 @@ import { PREVIEW_TOKEN_HEADER, SANDBOX_DEV_PORT } from "./vars";
 /** Terminal control sequences, stripped so the model reads log text. */
 const ANSI_ESCAPE = /\[[0-?]*[ -/]*[@-~]/g;
 
+/**
+ * Tool output is about two fifths of what a long conversation resends on every request, and a
+ * command's own output is the bulk of it. Capping it here, where it is produced, keeps it out of
+ * the saved conversation and out of every later request — trimming it downstream only helps the
+ * requests that have already outgrown the context window.
+ *
+ * Head and tail are kept because that is where the answer almost always is: what the command
+ * started doing and the error it ended on. The marker says how much went missing, so the agent
+ * knows to narrow its command instead of assuming it saw everything.
+ */
+const MAX_TOOL_OUTPUT = 2_000;
+
+/**
+ * A larger cap for the two tools whose whole point is to hand over a complete text — a file to
+ * edit, a log to debug. Cutting those to 2,000 characters would cost more in re-reads than it
+ * saves, and a half-read file is how a search-and-replace edit goes wrong.
+ */
+const MAX_TEXT_OUTPUT = 20_000;
+
+const capOutput = (text: string, limit = MAX_TOOL_OUTPUT) => {
+  if (text.length <= limit) return text;
+  const half = Math.floor(limit / 2);
+  return `${text.slice(0, half)}\n… ${text.length - limit} characters trimmed; re-run with a narrower command, path or range to see them …\n${text.slice(-half)}`;
+};
+
+/** A command result with both its streams capped; every other field is left alone. */
+const capRun = <T extends { stdout: string; stderr: string }>(
+  result: T,
+): T => ({
+  ...result,
+  stdout: capOutput(result.stdout),
+  stderr: capOutput(result.stderr),
+});
+
 export const createTools = (projectId: string) => {
   const sandboxFs = async () => (await openProject(projectId)).sandbox.fs;
 
@@ -38,7 +72,7 @@ export const createTools = (projectId: string) => {
     inputSchema: z.object({
       command: z.string().min(1).describe("The bash command to execute."),
     }),
-    execute: ({ command }) => runInApp(command),
+    execute: async ({ command }) => capRun(await runInApp(command)),
   });
 
   const readFileTool = tool({
@@ -54,7 +88,10 @@ export const createTools = (projectId: string) => {
         .downloadFile(target)
         .catch(() => null);
       if (!buffer) return { ok: false, error: "File not found." };
-      return { ok: true, content: buffer.toString("utf8") };
+      return {
+        ok: true,
+        content: capOutput(buffer.toString("utf8"), MAX_TEXT_OUTPUT),
+      };
     },
   });
 
@@ -116,10 +153,12 @@ export const createTools = (projectId: string) => {
       }
 
       return {
-        ...(await runInApp(
-          `find ${shellQuote(await relativeToApp(target))} -maxdepth ${maxDepth} -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/.git/*'`,
-          60,
-        )),
+        ...capRun(
+          await runInApp(
+            `find ${shellQuote(await relativeToApp(target))} -maxdepth ${maxDepth} -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/.git/*'`,
+            60,
+          ),
+        ),
         path: listPath,
         recursive,
         maxDepth,
@@ -146,10 +185,12 @@ export const createTools = (projectId: string) => {
       if (!target) return { ok: false, error: "Invalid path." };
 
       return {
-        ...(await runInApp(
-          `grep -RIn --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git -- ${shellQuote(query)} ${shellQuote(await relativeToApp(target))} | head -n ${maxResults}`,
-          60,
-        )),
+        ...capRun(
+          await runInApp(
+            `grep -RIn --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git -- ${shellQuote(query)} ${shellQuote(await relativeToApp(target))} | head -n ${maxResults}`,
+            60,
+          ),
+        ),
         query,
         path: searchPath,
       };
@@ -314,7 +355,10 @@ export const createTools = (projectId: string) => {
       const issues = (await devServerLogs())
         .split("\n")
         .filter((line) => issueRegex.test(line))
-        .slice(-20);
+        .slice(-20)
+        // A bundler stack trace arrives as one enormous line, and twenty of them would outweigh
+        // the rest of the request; each line gets a twentieth of the debug budget.
+        .map((line) => capOutput(line, MAX_TEXT_OUTPUT / 20));
 
       const httpOk =
         statusCode !== null && statusCode >= 200 && statusCode < 400;
@@ -357,7 +401,7 @@ export const createTools = (projectId: string) => {
       const lines = (await devServerLogs()).split("\n");
       return {
         ok: true,
-        logs: lines.slice(-maxLines).join("\n"),
+        logs: capOutput(lines.slice(-maxLines).join("\n"), MAX_TEXT_OUTPUT),
         totalLines: lines.length,
       };
     },
