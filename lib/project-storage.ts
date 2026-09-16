@@ -131,6 +131,15 @@ export const writeProjectMetadata = async (
   return metadata;
 };
 
+/**
+ * Forget a project: its conversations and releases go with it, through the
+ * foreign keys. The sandbox holding its code is deleted separately, by the
+ * caller, because the row has to outlive the sandbox long enough to name it.
+ */
+export const deleteProject = async (projectId: string) => {
+  await db.delete(projects).where(eq(projects.id, projectId));
+};
+
 /** Every project, newest first. */
 export const listProjects = async () => {
   const [projectRows, conversationRows, releaseRows] = await Promise.all([

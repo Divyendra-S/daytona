@@ -5,6 +5,7 @@ import { projectPaths } from "@/lib/project-paths";
 import { createProjectFiles } from "@/lib/project-runtime";
 import {
   createConversation,
+  deleteProject,
   listProjects,
   writeProjectMetadata,
 } from "@/lib/project-storage";
@@ -97,6 +98,9 @@ export async function POST(req: Request) {
     await deleteProjectSandbox(projectId).catch(() => {
       // A sandbox we cannot reach is left for the garbage collector.
     });
+    // The row goes too: a half-created project nobody can open would otherwise
+    // sit on the home screen, one card for every attempt that failed.
+    await deleteProject(projectId);
     await rm(projectPaths(projectId).root, { recursive: true, force: true });
     return NextResponse.json(
       {

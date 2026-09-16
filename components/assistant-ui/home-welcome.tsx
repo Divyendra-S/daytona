@@ -37,6 +37,7 @@ export const HomeWelcome: FC = () => {
   const [githubDialogOpen, setGithubDialogOpen] = useState(false);
   const [githubRepoInput, setGithubRepoInput] = useState("");
   const [githubRepoError, setGithubRepoError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const handleUseGithubRepo = () => {
     const githubRepoName = githubRepoInput.trim();
@@ -53,6 +54,41 @@ export const HomeWelcome: FC = () => {
     );
     setGithubDialogOpen(false);
     setGithubRepoInput("");
+  };
+
+  /**
+   * Delete a project, sandbox and all. Confirmed first because none of it comes
+   * back: the code lives in the sandbox, and the conversations in its rows.
+   */
+  const handleDelete = async (project: ProjectItem) => {
+    if (deletingId) return;
+    if (
+      !window.confirm(
+        `Delete “${project.name}”? Its sandbox, the code inside it and its conversations go too, and this cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    setDeletingId(project.id);
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const failure = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(failure?.error ?? `Request failed (${response.status})`);
+      }
+      window.dispatchEvent(new Event("ai-builder:projects-updated"));
+    } catch (error) {
+      window.alert(
+        `Could not delete the project: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const hasProjects = projects.length > 0;
@@ -205,6 +241,25 @@ export const HomeWelcome: FC = () => {
                           className="mt-1 -ml-1 inline-flex cursor-pointer rounded-control px-1 py-0.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
                         >
                           History
+                        </span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleDelete(project);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ")
+                              return;
+                            event.stopPropagation();
+                            event.preventDefault();
+                            void handleDelete(project);
+                          }}
+                          aria-disabled={deletingId === project.id}
+                          className="mt-1 ml-1 inline-flex cursor-pointer rounded-control px-1 py-0.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-red aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                        >
+                          {deletingId === project.id ? "Deleting…" : "Delete"}
                         </span>
                       </div>
                     </button>

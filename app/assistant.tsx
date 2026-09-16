@@ -328,7 +328,16 @@ export const Assistant = ({
         ),
       });
       if (!response.ok) {
-        throw new Error("Failed to create a project for this chat.");
+        // The server knows why — a sandbox quota, a failed clone, a timeout —
+        // and saying so beats a generic failure the user cannot act on.
+        const failure = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          failure?.error
+            ? `Could not create a project: ${failure.error}`
+            : "Failed to create a project for this chat.",
+        );
       }
 
       const data = await response.json();
