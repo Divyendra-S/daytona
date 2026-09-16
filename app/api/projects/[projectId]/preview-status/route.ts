@@ -84,6 +84,21 @@ export async function GET(
     });
   }
 
+  // The sandbox may well be fine — this deployment just cannot ask about it,
+  // most often because its `DAYTONA_API_KEY` belongs to a different account
+  // than the one that created the sandbox. Saying so beats reporting a
+  // project's work as deleted when it is still sitting there.
+  if (state === "unreachable") {
+    return NextResponse.json({
+      up: false,
+      running: false,
+      waking: false,
+      proxyUrl: null,
+      error:
+        "Cannot reach this project's sandbox. Check DAYTONA_API_KEY — a key from another account cannot see it.",
+    });
+  }
+
   if (state !== "started") {
     // Starting is what `ensureDevServer` does on its way to the sandbox; this poll just says so.
     void ensureDevServer(projectId).catch(() => {});

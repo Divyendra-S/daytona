@@ -329,5 +329,18 @@ export const projectSandboxState = async (projectId: string) => {
   return getDaytona()
     .get(sandboxId)
     .then((sandbox) => sandbox.state ?? ("unknown" as const))
-    .catch(() => "missing" as const);
+    .catch((error: unknown) => {
+      // Only a 404 means the sandbox is gone. Anything else — a key belonging
+      // to another Daytona account, an outage, a rate limit — must not be
+      // reported as deleted: that tells the user their work is unrecoverable
+      // when it is still there, one environment variable away.
+      const failure = error as {
+        statusCode?: number;
+        status?: number;
+        response?: { status?: number };
+      };
+      const status =
+        failure?.statusCode ?? failure?.status ?? failure?.response?.status;
+      return status === 404 ? ("missing" as const) : ("unreachable" as const);
+    });
 };
