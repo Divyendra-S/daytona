@@ -36,12 +36,23 @@ DAYTONA_API_KEY=dtn_...
 
 # OpenRouter key (optional — visitors can add their own in the UI)
 OPENROUTER_API_KEY=sk-or-...
+
+# Postgres (Supabase) — where projects, conversations and releases are stored
+DATABASE_URL=postgresql://...
+
+# Deployed builds only: the hosts the API answers on, comma-separated.
+# The API has no login of its own, so a deployed build must sit behind real
+# access control. Unset, AI Builder answers this machine only.
+APP_HOSTS=builder.example.com
 ```
 
 ```bash
 pnpm install
+pnpm db:push   # create the tables
 pnpm dev
 ```
+
+Projects that predate the database are brought in with `pnpm db:import`, which reads the `project.json` files still on disk.
 
 Open [http://localhost:3000](http://localhost:3000) to start building. AI Builder only listens on `127.0.0.1`, and its API refuses requests from other sites.
 
@@ -64,7 +75,7 @@ Both folders live inside the project's sandbox, and both ports are the sandbox's
 
 **The preview** is served through a small proxy on `127.0.0.1` rather than loaded from the sandbox directly. The proxy injects the click-to-select bridge, and it keeps the sandbox's preview token — which authenticates *every* port of that sandbox — on the server, where the browser cannot reach it.
 
-**State** — a project's metadata is `projects/<id>/project.json` (including the id of its sandbox), and each conversation is `projects/<id>/conversations/<id>.json`. There is no database.
+**State** — a project's metadata (including the id of its sandbox), its conversations and its releases are rows in Postgres (Supabase). The code itself lives in the sandbox, and nothing else lives on this machine.
 
 **Sandbox housekeeping** — `node scripts/daytona-gc.mjs` lists every sandbox AI Builder has created and flags the ones no project points at any more; add `--delete` to remove them.
 
@@ -73,7 +84,7 @@ Both folders live inside the project's sandbox, and both ports are the sandbox's
 - `lib/vars.ts` — the projects folder, template, sandbox ports, image and idle limits
 - `lib/sandbox.ts` — the one way in to a project's sandbox: create, open, wake, preview URLs
 - `lib/project-runtime.ts` — running commands in a sandbox, and creating a project
-- `lib/project-storage.ts` — project metadata and conversations, stored as JSON files
+- `lib/project-storage.ts` — project metadata, conversations and releases, read and written in Postgres; `lib/db/schema.ts` — the tables
 - `lib/terminal-bridge.ts` — sandbox ptys and server sessions, fanned out to browser tabs over SSE
 - `lib/preview-proxy.ts` — the loopback proxy that fronts the sandbox and injects the preview bridge
 - `lib/publish.ts` — building a release into production, and rolling back

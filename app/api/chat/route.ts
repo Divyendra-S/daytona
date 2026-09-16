@@ -67,6 +67,8 @@ export async function POST(req: Request) {
     apiKey: hasGlobalKey ? undefined : userApiKey,
     onUsage: (usage) => addUsage(projectId, usage),
     model: payload.model,
+    // Pins the conversation to one OpenRouter provider, so its prompt cache stays warm.
+    conversationId,
   });
 
   return result.toUIMessageStreamResponse({

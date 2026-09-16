@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { useProjects } from "@/lib/projects-context";
 import type { ProjectItem } from "@/lib/project-types";
 import { type FC, useState } from "react";
+import { useRouter } from "next/navigation";
 import { GithubIcon } from "lucide-react";
 
 /**
@@ -32,6 +33,7 @@ function getPreviewUrl(project: ProjectItem): string | null {
 
 export const HomeWelcome: FC = () => {
   const { projects, isLoading, onSelectProject } = useProjects();
+  const router = useRouter();
   const [githubDialogOpen, setGithubDialogOpen] = useState(false);
   const [githubRepoInput, setGithubRepoInput] = useState("");
   const [githubRepoError, setGithubRepoError] = useState<string | null>(null);
@@ -185,6 +187,25 @@ export const HomeWelcome: FC = () => {
                             </>
                           )}
                         </p>
+                        {/* A span, not a button: this card is itself a button. */}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            router.push(`/${project.id}?view=history`);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ")
+                              return;
+                            event.stopPropagation();
+                            event.preventDefault();
+                            router.push(`/${project.id}?view=history`);
+                          }}
+                          className="mt-1 -ml-1 inline-flex cursor-pointer rounded-control px-1 py-0.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+                        >
+                          History
+                        </span>
                       </div>
                     </button>
                   );
@@ -246,7 +267,12 @@ export const HomeWelcome: FC = () => {
             >
               Cancel
             </Button>
-            <Button type="button" variant="primary" size="sm" onClick={handleUseGithubRepo}>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={handleUseGithubRepo}
+            >
               Create Project
             </Button>
           </DialogFooter>
