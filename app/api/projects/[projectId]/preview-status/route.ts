@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { authorizeProject } from "@/lib/project-access";
 import { ensurePreviewProxy } from "@/lib/preview-proxy";
 import {
+  dormantPreviewUrl,
   previewOrigin,
   projectSandboxState,
-  signedPreviewUrl,
   touchProject,
 } from "@/lib/sandbox";
 import {
@@ -134,8 +134,10 @@ export async function GET(
 
   // The proxy listens on this machine's loopback, so it is only a preview the
   // browser can load when the browser is on this machine too. A deployed build
-  // hands out the sandbox's signed URL instead: one port, short-lived, safe in
-  // an iframe — at the cost of the click-to-select bridge the proxy injects.
+  // hands out the sandbox's signed URL instead — one port, short-lived, safe in
+  // an iframe — fronted by whichever preview proxy the deployment has. The
+  // same cached URL every poll: a fresh signing is a fresh host, and the frame
+  // would reload on each.
   const local = LOCAL_HOSTS.has(
     (req.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase(),
   );
@@ -146,7 +148,9 @@ export async function GET(
       ? ensurePreviewProxy(projectId)
           .then((port) => (port ? `http://${LOCAL_HOST}:${port}` : null))
           .catch(() => null)
-      : signedPreviewUrl(projectId, SANDBOX_DEV_PORT).catch(() => null),
+      : dormantPreviewUrl(projectId, SANDBOX_DEV_PORT).then(
+          (url) => url || null,
+        ),
   ]);
 
   // The user is watching the preview, so the sandbox is in use even if nothing else says so.

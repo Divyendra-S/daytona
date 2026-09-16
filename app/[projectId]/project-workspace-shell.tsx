@@ -19,6 +19,7 @@ import { CodePreview } from "@/components/assistant-ui/code-preview";
 import { FigmaCanvas } from "@/components/figma-canvas";
 import { DesignActions } from "@/components/design-actions";
 import { addEdit, clearEdits, type PickedElement } from "@/lib/edit-queue";
+import { PREVIEW_HOST_PARAM } from "@/lib/vars";
 import {
   Tooltip,
   TooltipContent,
@@ -362,7 +363,8 @@ export function ProjectWorkspaceShell({
       // A reload replaces the bridge, which starts with picking off.
       if (data.type === "ready")
         tellPreview(iframe, { type: "select", on: selectingRef.current });
-      if (data.type === "location" && data.path) setPreviewPath(data.path);
+      if (data.type === "location" && data.path)
+        setPreviewPath(displayPath(data.path));
       if (data.type === "selected" && data.element) setSelection(data.element);
       // The picked element scrolled or the preview resized: the change box follows it.
       if (data.type === "selection-rect" && data.rect) {
@@ -723,6 +725,22 @@ function PreviewPlaceholder() {
     </div>
   );
 }
+
+/**
+ * A preview path as the address bar shows it. The hosted preview proxy is told
+ * which sandbox to reach by a parameter on the URL the frame loads, and the
+ * bridge reports the page's URL as it is; the parameter is the proxy's, not
+ * the page's.
+ */
+const displayPath = (path: string) => {
+  try {
+    const url = new URL(path, "http://preview.invalid");
+    url.searchParams.delete(PREVIEW_HOST_PARAM);
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return path;
+  }
+};
 
 /** A message for the bridge inside the preview; it only listens to its parent window. */
 const tellPreview = (
@@ -1214,15 +1232,6 @@ function BrowserControls({
     }
   }, [previewUrl]);
 
-  const baseUrl = (() => {
-    try {
-      const u = new URL(previewUrl);
-      return `${u.protocol}//${u.host}`;
-    } catch {
-      return previewUrl;
-    }
-  })();
-
   // Navigating inside the preview (links, client routing) keeps the address bar in step.
   useEffect(() => {
     if (previewPath) setUrlValue(previewPath);
@@ -1233,9 +1242,18 @@ function BrowserControls({
     if (!iframe) return;
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     setUrlValue(normalizedPath);
-    // The frame's own origin — the preview proxy — rather than the dev server behind it.
-    const origin = iframe.src ? new URL(iframe.src).origin : baseUrl;
-    iframe.src = `${origin}${normalizedPath}`;
+    // The frame's own origin — the preview proxy — rather than the dev server behind it. A
+    // hosted proxy is told which sandbox by a parameter on the URL, so that stays too.
+    const base = iframe.src || previewUrl;
+    let target: URL;
+    try {
+      target = new URL(normalizedPath, base);
+    } catch {
+      return;
+    }
+    const host = new URL(base).searchParams.get(PREVIEW_HOST_PARAM);
+    if (host) target.searchParams.set(PREVIEW_HOST_PARAM, host);
+    iframe.src = target.toString();
   };
 
   const handleReload = () => {

@@ -2,7 +2,6 @@
 
 An open-source AI app builder. Describe what you want, and AI Builder builds it for you in real time — complete with a live preview, terminals, and one-click publishing.
 
-
 AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds and serves. Your computer runs the chat, the UI and the preview proxy; each project's metadata, conversations and releases are rows in Postgres.
 
 > **The agent works in a sandbox, not on your computer.** Its commands, its file edits and your terminal tabs all run inside the project's own container, so an agent mistake cannot touch your machine. Sandboxes stop themselves after 15 minutes idle and cost disk only while stopped.
@@ -46,13 +45,21 @@ DATABASE_URL=postgresql://...
 # access control. Unset, AI Builder answers this machine only.
 APP_HOSTS=builder.example.com
 
-# Deployed builds only: the domain the preview proxy in workers/preview-proxy
-# is served on. Without it the preview loads Daytona's own host, which greets
-# every load in an iframe with a warning page.
+# Deployed builds only, one of the two: where the preview proxy is served.
+# Without either the preview loads Daytona's own host, which greets every
+# load in an iframe with a warning page.
+#
+# A second hostname of this same deployment — on Vercel, an extra
+# `.vercel.app` name added to the project. Needs no DNS of your own.
+PREVIEW_PROXY_HOST=my-app-preview.vercel.app
+# Or: the domain the Cloudflare Worker in workers/preview-proxy is served on.
 PREVIEW_PROXY_DOMAIN=preview.example.com
 ```
 
-**Deploying** needs one more piece than running locally: the preview proxy. Locally, `lib/preview-proxy.ts` fronts each sandbox from `127.0.0.1`; a browser elsewhere cannot reach that, and Daytona's own preview host shows a warning page that an iframe can never click past. `workers/preview-proxy` is the same proxy as a Cloudflare Worker on a wildcard hostname — `<sandbox>.preview.example.com` — that needs no secret, because the sandbox host it forwards to is already a signed, expiring one. Put the zone on Cloudflare, set the route in `workers/preview-proxy/wrangler.jsonc`, run `wrangler deploy` there, and set `PREVIEW_PROXY_DOMAIN` in the deployment.
+**Deploying** needs one more piece than running locally: the preview proxy. Locally, `lib/preview-proxy.ts` fronts each sandbox from `127.0.0.1`; a browser elsewhere cannot reach that, and Daytona's own preview host shows a warning page that an iframe can never click past. A deployed build fronts the sandbox with a proxy of its own, and there are two to choose from. Neither holds a secret: the sandbox host either one forwards to is already a signed, expiring one.
+
+- **On the deployment itself** (`lib/hosted-preview-proxy.ts`) — for a deployment with nothing but the deployment, no DNS included. Give the deployment a second hostname and set `PREVIEW_PROXY_HOST` to it; every request arriving on that hostname is relayed to a sandbox, so it must not be the hostname the app is used on. On Vercel: _Settings → Domains → Add_, enter a free `.vercel.app` name such as `my-app-preview.vercel.app`, set `PREVIEW_PROXY_HOST=my-app-preview.vercel.app` in the project's environment variables, and redeploy. The sandbox host rides in the URL the app hands out, and the proxy keeps it in a partitioned cookie from there, so the browser must accept those (every current browser does). The dev server's hot-reload websocket does not survive a serverless relay, so a preview served this way is refreshed by hand, with the reload button.
+- **On Cloudflare** (`workers/preview-proxy`) — the same proxy as a Worker on a wildcard hostname, `<sandbox>.preview.example.com`, for a domain you have on Cloudflare. Websockets included, so hot reload works. Set the route in `workers/preview-proxy/wrangler.jsonc`, run `wrangler deploy` there, and set `PREVIEW_PROXY_DOMAIN` in the deployment.
 
 ```bash
 pnpm install
@@ -95,6 +102,7 @@ Both folders live inside the project's sandbox, and both ports are the sandbox's
 - `lib/project-storage.ts` — project metadata, conversations and releases, read and written in Postgres; `lib/db/schema.ts` — the tables
 - `lib/terminal-bridge.ts` — sandbox ptys and server sessions, fanned out to browser tabs over SSE
 - `lib/preview-proxy.ts` — the loopback proxy that fronts the sandbox and injects the preview bridge
+- `lib/hosted-preview-proxy.ts` — the same proxy for a deployed build, served on a second hostname of the deployment
 - `lib/publish.ts` — building a release into production, and rolling back
 - `lib/create-tools.ts` — the agent's tools; `lib/system-prompt.ts` — its instructions
 - `lib/llm-provider.ts` — OpenRouter model setup

@@ -58,10 +58,11 @@ export type ProjectItem = {
   id: string;
   name: string;
   /**
-   * A signed, expiring URL straight to the sandbox's dev port — what the address
-   * bar shows, and where "open in a new tab" goes. Not where the preview frame
-   * loads from: that is the `proxyUrl` from `preview-status`, which carries the
-   * click-to-select bridge. Empty when signing fails, so never a URL base.
+   * A signed, expiring URL to the sandbox's dev port, through the deployment's
+   * preview proxy when it has one — what the address bar shows, and where
+   * "open in a new tab" goes. Not where the preview frame loads from: that is
+   * the `proxyUrl` from `preview-status`, which carries the click-to-select
+   * bridge. Empty when signing fails, so never a URL base.
    */
   previewUrl: string;
   /** A signed, expiring URL straight to the sandbox's production port. */

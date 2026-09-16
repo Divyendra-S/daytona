@@ -53,7 +53,7 @@ export const AUTO_ARCHIVE_MINUTES = 7 * 24 * 60;
  * SECURITY: this token is sandbox-wide — it authenticates every port,
  * including the sandbox's own toolbox API. It must never reach the browser.
  * Anything an iframe loads directly gets a signed URL instead
- * (`signedPreviewUrl`), which is scoped to one port and expires.
+ * (`dormantPreviewUrl`), which is scoped to one port and expires.
  */
 export const PREVIEW_TOKEN_HEADER = "x-daytona-preview-token";
 
@@ -67,3 +67,28 @@ export const PREVIEW_TOKEN_HEADER = "x-daytona-preview-token";
  * without this header the preview renders the warning instead of the app.
  */
 export const PREVIEW_SKIP_WARNING_HEADER = "x-daytona-skip-preview-warning";
+
+/* ------------------------------------------------------------------ */
+/*  The hosted preview proxy (a deployment with no DNS of its own)     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The hostname a deployed build serves the preview proxy on — a second
+ * hostname of the same deployment, such as an extra `.vercel.app` name.
+ * Every request arriving on it is relayed to a sandbox, so it must not be
+ * the hostname the app itself is used on. Unset, and with no
+ * `PREVIEW_PROXY_DOMAIN` either, the preview loads Daytona's own host.
+ */
+export const PREVIEW_PROXY_HOST = (process.env["PREVIEW_PROXY_HOST"] ?? "")
+  .trim()
+  .toLowerCase()
+  .replace(/^[a-z]+:\/\//, "")
+  .replace(/\/.*$/, "");
+
+/**
+ * How the browser tells the hosted proxy which sandbox host to reach: a query
+ * parameter on the URL the app hands out, and a cookie the proxy sets from
+ * it, for the requests that follow once the page has navigated on its own.
+ */
+export const PREVIEW_HOST_PARAM = "__preview";
+export const PREVIEW_HOST_COOKIE = "__preview_host";
