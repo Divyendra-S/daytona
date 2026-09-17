@@ -8,6 +8,8 @@
 interface Env {
   BUCKET: R2Bucket;
   SITE_ROUTES: KVNamespace;
+  /** Comma-separated hostnames under the wildcard that are not published sites. */
+  PASS_THROUGH_HOSTS?: string;
 }
 
 const notFound = (text: string) =>
@@ -18,6 +20,15 @@ const notFound = (text: string) =>
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // The wildcard route takes every subdomain of the zone, ahead of whatever
+    // else is served there — another Worker's custom domain included. Those
+    // hostnames are handed on untouched, to the origin they had before.
+    const hostname = new URL(request.url).hostname.toLowerCase();
+    const passThrough = (env.PASS_THROUGH_HOSTS ?? "")
+      .split(",")
+      .map((host) => host.trim().toLowerCase());
+    if (passThrough.includes(hostname)) return fetch(request);
+
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Method not allowed", {
         status: 405,

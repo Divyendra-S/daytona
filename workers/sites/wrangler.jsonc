@@ -8,6 +8,9 @@
   // The preview proxy's `*.preview.<domain>` is a level deeper and more
   // specific, so the two wildcards do not collide.
   "routes": [{ "pattern": "*.orble.co/*", "zone_name": "orble.co" }],
+  // Hostnames the wildcard would otherwise swallow: the builder's own `www`
+  // and the hostname its preview proxy is served on (PREVIEW_PROXY_HOST).
+  "vars": { "PASS_THROUGH_HOSTS": "www.orble.co,orble-preview.orble.co" },
   // What the app's publish writes (lib/site-hosting.ts) and this Worker reads.
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "published-sites" }],
   "kv_namespaces": [
