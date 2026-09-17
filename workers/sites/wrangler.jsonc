@@ -7,10 +7,10 @@
   // must be on Cloudflare. Set the same domain as SITES_DOMAIN in the app.
   // The preview proxy's `*.preview.<domain>` is a level deeper and more
   // specific, so the two wildcards do not collide.
-  "routes": [{ "pattern": "*.example.com/*", "zone_name": "example.com" }],
+  "routes": [{ "pattern": "*.orble.co/*", "zone_name": "orble.co" }],
   // What the app's publish writes (lib/site-hosting.ts) and this Worker reads.
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "published-sites" }],
   "kv_namespaces": [
-    { "binding": "SITE_ROUTES", "id": "PASTE_KV_NAMESPACE_ID" },
+    { "binding": "SITE_ROUTES", "id": "b9ce2704b16d4af6aa923cf96b1b8f8a" },
   ],
 }
