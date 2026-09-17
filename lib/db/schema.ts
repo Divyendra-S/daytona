@@ -31,6 +31,11 @@ export const projects = pgTable("projects", {
   sandboxId: text(),
   /** The release production is currently serving. */
   liveReleaseId: text(),
+  /**
+   * The label the project is published under, `<subdomain>.SITES_DOMAIN`, as
+   * the user chose it. Null until they choose, and the project id stands in.
+   */
+  subdomain: text().unique(),
   inputTokens: bigint({ mode: "number" }).notNull().default(0),
   outputTokens: bigint({ mode: "number" }).notNull().default(0),
   /** USD, as reported by OpenRouter's usage accounting. */

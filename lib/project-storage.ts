@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { type UIMessage } from "ai";
 import { getDb } from "./db/client";
 import { conversations, projects, releases } from "./db/schema";
@@ -87,6 +87,7 @@ const toMetadata = (
   conversations: conversationRows.map(toSummary),
   releases: releaseRows.map(toRelease),
   liveReleaseId: project.liveReleaseId,
+  subdomain: project.subdomain,
   usage: {
     inputTokens: project.inputTokens,
     outputTokens: project.outputTokens,
@@ -171,6 +172,43 @@ export const setProjectSandbox = async (
     .update(projects)
     .set({ sandboxId })
     .where(eq(projects.id, projectId));
+};
+
+const SUBDOMAIN_TAKEN = "That subdomain is already taken. Try another.";
+
+/**
+ * Give a project the subdomain it is published under. Taken means another
+ * project chose it, or another project's id is that word and still stands in
+ * for a choice it has not made.
+ */
+export const claimSubdomain = async (projectId: string, subdomain: string) => {
+  const [holder] = await getDb()
+    .select({ id: projects.id })
+    .from(projects)
+    .where(
+      and(
+        ne(projects.id, projectId),
+        or(
+          eq(projects.subdomain, subdomain),
+          and(eq(projects.id, subdomain), isNull(projects.subdomain)),
+        ),
+      ),
+    )
+    .limit(1);
+  if (holder) throw new Error(SUBDOMAIN_TAKEN);
+
+  try {
+    await getDb()
+      .update(projects)
+      .set({ subdomain })
+      .where(eq(projects.id, projectId));
+  } catch (error) {
+    // Two projects asking at once: the unique index settles it.
+    if ((error as { code?: string }).code === "23505") {
+      throw new Error(SUBDOMAIN_TAKEN);
+    }
+    throw error;
+  }
 };
 
 /** The signed preview URL a project is currently handing out for a port. */

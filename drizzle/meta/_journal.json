@@ -15,6 +15,13 @@
       "when": 1789565289477,
       "tag": "0001_smooth_blazing_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789639103288,
+      "tag": "0002_romantic_joseph",
+      "breakpoints": true
     }
   ]
 }

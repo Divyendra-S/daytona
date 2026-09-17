@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { GIT_IDENTITY, run, runStep, shellQuote } from "./project-runtime";
 import {
   addRelease,
+  claimSubdomain,
   readProjectMetadata,
   updateRelease,
 } from "./project-storage";
@@ -9,9 +10,11 @@ import type { ProjectRelease } from "./project-types";
 import { openProject } from "./sandbox";
 import {
   assertSiteHosting,
+  parseSubdomain,
   releaseIsUploaded,
   routeHost,
   siteHost,
+  unrouteHost,
   uploadSite,
 } from "./site-hosting";
 
@@ -156,7 +159,8 @@ const shipToProduction = async (projectId: string, release: ProjectRelease) => {
   );
 
   // Live from this write on: the serving Worker reads the hostname's release from here.
-  await routeHost(siteHost(projectId), projectId, release.id);
+  const { subdomain } = await readProjectMetadata(projectId);
+  await routeHost(siteHost(projectId, subdomain), projectId, release.id);
 };
 
 /**
@@ -184,12 +188,39 @@ const settleRelease = (
     });
 
 /**
+ * Publish the project under a subdomain of the user's choosing. A site that is
+ * already live moves with it, there and then: the new hostname serves the live
+ * release and the old one stops, so the address the project shows is never one
+ * that does not answer — even if the build that follows fails.
+ */
+const moveSite = async (projectId: string, requested: string) => {
+  const subdomain = parseSubdomain(requested);
+  const metadata = await readProjectMetadata(projectId);
+  if (subdomain === (metadata.subdomain ?? projectId)) return;
+
+  await claimSubdomain(projectId, subdomain);
+  if (!metadata.liveReleaseId) return;
+
+  await routeHost(
+    siteHost(projectId, subdomain),
+    projectId,
+    metadata.liveReleaseId,
+  );
+  await unrouteHost(siteHost(projectId, metadata.subdomain));
+};
+
+/**
  * Commit the app's current code and publish it as a new release. Returns once
  * the release is recorded; `settled` resolves when it is live or has failed.
  */
-export const publishProject = async (projectId: string, message: string) => {
+export const publishProject = async (
+  projectId: string,
+  message: string,
+  subdomain?: string,
+) => {
   assertSiteHosting();
-  await readProjectMetadata(projectId);
+  if (subdomain) await moveSite(projectId, subdomain);
+  else await readProjectMetadata(projectId);
   const { app } = await openProject(projectId);
   const releaseId = randomUUID();
 
@@ -251,6 +282,10 @@ export const rollbackToRelease = async (
     throw new Error("This release was never uploaded. Publish again instead.");
   }
 
-  await routeHost(siteHost(projectId), projectId, releaseId);
+  await routeHost(
+    siteHost(projectId, metadata.subdomain),
+    projectId,
+    releaseId,
+  );
   await updateRelease(projectId, releaseId, { state: "live" });
 };

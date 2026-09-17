@@ -272,14 +272,14 @@ export function ProjectWorkspaceShell({
 
   /** Commit the current code and publish it as a new release. */
   const onPublish = useCallback(
-    async (nextProjectId: string, message: string) => {
+    async (nextProjectId: string, message: string, subdomain: string) => {
       // The request stays open until the release is live or has failed, so the
       // release is picked up — as "publishing" — without waiting for it.
       const showRelease = window.setTimeout(() => void loadProjects(), 3000);
       const response = await fetch(`/api/projects/${nextProjectId}/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, subdomain }),
       }).finally(() => window.clearTimeout(showRelease));
 
       if (!response.ok) {
@@ -1210,7 +1210,11 @@ function BrowserControls({
   previewUrl: string;
   iframeRef: React.RefObject<HTMLIFrameElement | null>;
   project: ProjectItem;
-  onPublish: (projectId: string, message: string) => Promise<void>;
+  onPublish: (
+    projectId: string,
+    message: string,
+    subdomain: string,
+  ) => Promise<void>;
   onRollback: (projectId: string, releaseId: string) => Promise<void>;
   view: PanelView;
   onViewChange: (view: PanelView) => void;

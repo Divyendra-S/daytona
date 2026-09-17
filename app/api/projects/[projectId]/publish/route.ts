@@ -11,12 +11,19 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const payload = (await req.json().catch(() => ({}))) as { message?: string };
+  const payload = (await req.json().catch(() => ({}))) as {
+    message?: string;
+    subdomain?: string;
+  };
   const message = payload.message?.trim() || "Publish";
 
   let release: Awaited<ReturnType<typeof publishProject>>;
   try {
-    release = await publishProject(projectId, message);
+    release = await publishProject(
+      projectId,
+      message,
+      payload.subdomain?.trim() || undefined,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Publish failed." },

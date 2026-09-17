@@ -39,7 +39,8 @@ const toProjectItem = async (
   previewUrl: metadata.sandboxId
     ? await dormantPreviewUrl(id, SANDBOX_DEV_PORT)
     : "",
-  productionUrl: siteUrl(id),
+  productionUrl: siteUrl(id, metadata.subdomain),
+  subdomain: metadata.subdomain ?? id,
   hasSandbox: Boolean(metadata.sandboxId),
   conversations: metadata.conversations,
   releases: metadata.releases,
@@ -85,6 +86,7 @@ export async function POST(req: Request) {
     conversations: [],
     releases: [],
     liveReleaseId: null,
+    subdomain: null,
   };
   await writeProjectMetadata(projectId, metadata);
 

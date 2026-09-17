@@ -44,14 +44,51 @@ const sitesDomain = () =>
     .replace(/\/.*$/, "");
 
 /**
- * The hostname a project is published on. The project id is the subdomain: it
- * is already unique, lowercase and a valid DNS label.
+ * The hostname a project is published on: the subdomain its user chose, or
+ * until they do, the project id — already unique, lowercase and a valid label.
  */
-export const siteHost = (projectId: string) =>
-  sitesDomain() ? `${projectId}.${sitesDomain()}` : "";
+export const siteHost = (projectId: string, subdomain: string | null) =>
+  sitesDomain() ? `${subdomain ?? projectId}.${sitesDomain()}` : "";
 
-export const siteUrl = (projectId: string) =>
-  siteHost(projectId) ? `https://${siteHost(projectId)}` : "";
+export const siteUrl = (projectId: string, subdomain: string | null) =>
+  siteHost(projectId, subdomain)
+    ? `https://${siteHost(projectId, subdomain)}`
+    : "";
+
+/** Names that are, or may become, the platform's own hostnames. */
+const RESERVED = new Set([
+  "www",
+  "app",
+  "api",
+  "admin",
+  "auth",
+  "builder",
+  "dashboard",
+  "docs",
+  "mail",
+  "preview",
+  "sites",
+  "status",
+  "support",
+]);
+
+/**
+ * A subdomain as the user typed it, made safe to publish on: one DNS label,
+ * because the zone's certificate covers one level and no more.
+ */
+export const parseSubdomain = (raw: string) => {
+  const label = raw.trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/.test(label)) {
+    throw new Error(
+      "A subdomain is 3 to 63 letters, numbers or hyphens, and cannot start or end with a hyphen.",
+    );
+  }
+  // `orble-preview` and the like: whatever the builder itself is served on.
+  if (RESERVED.has(label) || label.endsWith("-preview")) {
+    throw new Error("That subdomain is reserved. Try another.");
+  }
+  return label;
+};
 
 const objectUrl = (key: string) =>
   `https://${setting("CF_ACCOUNT_ID")}.r2.cloudflarestorage.com/${
@@ -150,14 +187,19 @@ export const routeHost = async (
   }
 };
 
-/** Take a deleted project's site down: its hostname first, then every file of every release. */
-export const deleteSite = async (projectId: string) => {
-  if (REQUIRED.some((name) => !setting(name))) return;
-
-  await fetch(routeUrl(siteHost(projectId)), {
+/** Stop serving a hostname, when its project moves to another or is deleted. */
+export const unrouteHost = async (host: string) => {
+  await fetch(routeUrl(host), {
     method: "DELETE",
     headers: { Authorization: `Bearer ${setting("CF_KV_API_TOKEN")}` },
   });
+};
+
+/** Take a deleted project's site down: its hostname first, then every file of every release. */
+export const deleteSite = async (projectId: string, host: string) => {
+  if (REQUIRED.some((name) => !setting(name))) return;
+
+  await unrouteHost(host);
 
   const client = r2();
   // A listing is a page of at most a thousand keys; deleting them empties the

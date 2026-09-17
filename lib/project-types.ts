@@ -50,6 +50,8 @@ export type ProjectMetadata = {
   releases: ProjectRelease[];
   /** The release production is currently serving. */
   liveReleaseId: string | null;
+  /** The label the project is published under; null means its id is used. */
+  subdomain: string | null;
   /** Absent until the project's first recorded model call. */
   usage?: ProjectUsage;
 };
@@ -67,6 +69,8 @@ export type ProjectItem = {
   previewUrl: string;
   /** Where the project is published, live or not yet. Empty when no `SITES_DOMAIN` is set. */
   productionUrl: string;
+  /** The first label of `productionUrl`'s hostname: the user's choice, or the project id. */
+  subdomain: string;
   /** False for a pre-Daytona project, which has no sandbox and cannot be opened. */
   hasSandbox: boolean;
   conversations: ProjectConversationSummary[];

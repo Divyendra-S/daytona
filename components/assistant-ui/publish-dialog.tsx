@@ -82,10 +82,15 @@ export function PublishDialog({
   onRollback,
 }: {
   project: ProjectItem;
-  onPublish: (projectId: string, message: string) => Promise<void>;
+  onPublish: (
+    projectId: string,
+    message: string,
+    subdomain: string,
+  ) => Promise<void>;
   onRollback: (projectId: string, releaseId: string) => Promise<void>;
 }) {
   const [message, setMessage] = React.useState("");
+  const [subdomain, setSubdomain] = React.useState(project.subdomain);
   const [isPublishing, setIsPublishing] = React.useState(false);
   const [publishError, setPublishError] = React.useState<string | null>(null);
   const [rollingBackId, setRollingBackId] = React.useState<string | null>(null);
@@ -98,6 +103,11 @@ export function PublishDialog({
     return () => window.removeEventListener("ai-builder:open-publish", onOpen);
   }, []);
 
+  // Another project, or a publish that settled on a different name.
+  React.useEffect(() => {
+    setSubdomain(project.subdomain);
+  }, [project.id, project.subdomain]);
+
   const releases = project.releases;
   const isBuilding = releases.some((release) => release.state === "publishing");
   const productionHost = (() => {
@@ -109,11 +119,18 @@ export function PublishDialog({
     }
   })();
 
+  // Everything after the project's own label: the domain all sites share.
+  const sitesDomain = productionHost.split(".").slice(1).join(".");
+
   const publish = async () => {
     setIsPublishing(true);
     setPublishError(null);
     try {
-      await onPublish(project.id, message.trim() || "Publish");
+      await onPublish(
+        project.id,
+        message.trim() || "Publish",
+        subdomain.trim().toLowerCase() || project.subdomain,
+      );
       setMessage("");
     } catch (error) {
       setPublishError(
@@ -169,6 +186,29 @@ export function PublishDialog({
             <p className="text-xs font-medium text-muted-foreground">
               Production
             </p>
+            {sitesDomain && (
+              <div className="flex items-center rounded-md border focus-within:ring-1 focus-within:ring-ring">
+                <input
+                  value={subdomain}
+                  onChange={(event) =>
+                    setSubdomain(
+                      event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                  maxLength={63}
+                  spellCheck={false}
+                  aria-label="Subdomain"
+                  placeholder="your-site"
+                  disabled={isPublishing || isBuilding}
+                  className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm outline-none disabled:opacity-60"
+                />
+                <span className="shrink-0 pr-3 text-sm text-muted-foreground">
+                  .{sitesDomain}
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2 rounded-md border px-3 py-2">
               {project.liveReleaseId ? (
                 <a

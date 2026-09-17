@@ -61,7 +61,10 @@ to end, which needs Part A.
    ```
 
    `R2_BUCKET` is optional and defaults to `published-sites`. Then restart
-   `pnpm dev` / redeploy the builder. No database migration is needed.
+   `pnpm dev` / redeploy the builder.
+
+8. **Add the subdomain column.** `pnpm db:push`, once, before running or
+   deploying this code.
 
 ## Part B — What the code does (Owner: Claude, done)
 
@@ -90,8 +93,15 @@ to end, which needs Part A.
 - **Rollback** no longer rebuilds: it checks the release's files are in R2 and
   repoints the hostname. Releases from before this change were never uploaded
   and answer "Publish again instead", shown in the dialog.
-- **Subdomain** is the project id (unique, lowercase, a valid DNS label), so
-  there is no schema change. A renameable `subdomain` column is a later step.
+- **Subdomain** is chosen in the Publish dialog and sent with the publish. It
+  is one DNS label (3–63 of `a-z 0-9 -`), not a reserved name, and unique:
+  `projects.subdomain` has a unique index, and a name is also taken while it is
+  another project's id standing in for a choice not yet made. Until a project
+  chooses, its id is the subdomain. A live site moves with a rename at once —
+  the new hostname is routed to the live release and the old one unrouted —
+  before the build starts. Needs the `subdomain` column: `pnpm db:push`
+  (migration `drizzle/0002_*`), **before** this code runs anywhere, since every
+  project query selects the column.
 - **The publish request stays open** until the release settles, sending a
   space every 15 s. A Worker is stopped about 30 s after it answers, and a
   build takes minutes; while the client is connected there is no such limit.
