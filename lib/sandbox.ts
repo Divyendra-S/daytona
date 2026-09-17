@@ -7,6 +7,8 @@ import {
 import {
   AUTO_ARCHIVE_MINUTES,
   AUTO_STOP_MINUTES,
+  PREVIEW_HOST_PARAM,
+  PREVIEW_PROXY_HOST,
   SANDBOX_IMAGE,
   SANDBOX_LABEL,
   SANDBOX_RESOURCES,
@@ -293,7 +295,7 @@ export const deleteProjectSandbox = async (projectId: string) => {
  *
  * SECURITY: the token authenticates every port of the sandbox, including its
  * own toolbox API. It is server-side only — never put it in a response body, a
- * redirect, or anything the browser can read. Use `signedPreviewUrl` for that.
+ * redirect, or anything the browser can read. Use `dormantPreviewUrl` for that.
  */
 export const previewOrigin = async (projectId: string, port: number) => {
   const entry = (await openProject(projectId)) as Entry;
@@ -309,17 +311,37 @@ export const previewOrigin = async (projectId: string, port: number) => {
 /**
  * The URL the browser loads for a signed preview. Daytona's own preview host
  * greets a browser with a warning page it remembers in a cookie — which an
- * iframe cannot keep — so a deployed build fronts it with the preview proxy in
- * `workers/preview-proxy`, on the domain `PREVIEW_PROXY_DOMAIN` names. The
- * upstream host travels in the hostname (`.` as `--`), so the proxy stores
- * nothing. Unset, the signed URL is used as is.
+ * iframe cannot keep — so a deployed build fronts it with a preview proxy of
+ * its own, one of two:
+ *
+ * - `workers/preview-proxy`, on the domain `PREVIEW_PROXY_DOMAIN` names. The
+ *   upstream host travels in the hostname (`.` as `--`), so the proxy stores
+ *   nothing.
+ * - `lib/hosted-preview-proxy.ts`, on `PREVIEW_PROXY_HOST` — a second
+ *   hostname of the deployment itself, for a deployment with no DNS to put a
+ *   wildcard on. The upstream host travels in the query, and the proxy keeps
+ *   it in a cookie from there.
+ *
+ * Neither set, the signed URL is used as is.
  */
 const publicPreviewUrl = (signedUrl: string) => {
+  if (!signedUrl) return signedUrl;
   const domain = process.env["PREVIEW_PROXY_DOMAIN"];
-  if (!domain || !signedUrl) return signedUrl;
-  const url = new URL(signedUrl);
-  url.hostname = `${url.hostname.replace(/\./g, "--")}.${domain}`;
-  return url.toString();
+  if (domain) {
+    const url = new URL(signedUrl);
+    url.hostname = `${url.hostname.replace(/\./g, "--")}.${domain}`;
+    return url.toString();
+  }
+  if (PREVIEW_PROXY_HOST) {
+    const signed = new URL(signedUrl);
+    const url = new URL(
+      signed.pathname + signed.search,
+      `https://${PREVIEW_PROXY_HOST}`,
+    );
+    url.searchParams.set(PREVIEW_HOST_PARAM, signed.hostname);
+    return url.toString();
+  }
+  return signedUrl;
 };
 
 /**
@@ -402,6 +424,10 @@ const RESIGN_MARGIN = 10 * 60 * 1000;
  * keeps the bill near zero. Signing a URL only needs the sandbox record, not a
  * running sandbox, so this asks Daytona for the sandbox and signs. A URL for a
  * stopped sandbox simply does not answer until something starts it.
+ *
+ * Cached, and the cache is the point as much as the saving: every signing
+ * gives a different host, and a preview frame pointed at a URL that changed
+ * reloads. The workspace asks for this URL every few seconds.
  */
 export const dormantPreviewUrl = (projectId: string, port: number) =>
   stableSignedUrl(projectId, port, async () => {

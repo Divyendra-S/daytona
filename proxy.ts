@@ -1,4 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { relayPreview } from "@/lib/hosted-preview-proxy";
+import { PREVIEW_PROXY_HOST } from "@/lib/vars";
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
@@ -47,6 +49,19 @@ export function proxy(request: NextRequest) {
   const host = (request.headers.get("host") ?? "")
     .replace(/:\d+$/, "")
     .toLowerCase();
+  const { pathname } = request.nextUrl;
+
+  // The preview proxy's hostname is not this app's: everything arriving on it
+  // — pages, assets, the sandbox app's own API — is a sandbox's, and is relayed
+  // from right here. Not rewritten to a route of the app: a route is a path,
+  // and a path exists on the app's own hostname too, where sandbox content
+  // must never be served — it would share the app's origin, and everything
+  // the browser holds for it.
+  if (PREVIEW_PROXY_HOST && host === PREVIEW_PROXY_HOST) {
+    return relayPreview(request, pathname);
+  }
+  if (!pathname.startsWith("/api/")) return NextResponse.next();
+
   const site = request.headers.get("sec-fetch-site");
 
   if (
@@ -59,4 +74,10 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: "/api/:path*" };
+/**
+ * Everything, not just the API: on the preview proxy's hostname every path is
+ * a sandbox's, the sandbox app's `/_next/static` included, and a matcher
+ * cannot tell hostnames apart. On the app's own hostname a request that is
+ * not for the API passes straight through.
+ */
+export const config = { matcher: "/:path*" };
