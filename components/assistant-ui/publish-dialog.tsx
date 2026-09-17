@@ -72,9 +72,9 @@ const ReleaseState = ({
 };
 
 /**
- * Publishing commits the current code and builds it into the project's
- * production copy, served on its own port. Every release keeps its commit,
- * so production can be rolled back to any of them.
+ * Publishing commits the current code, builds it as a static site and serves
+ * it on the project's own hostname. Every release keeps its files, so
+ * production can be rolled back to any of them.
  */
 export function PublishDialog({
   project,
@@ -126,10 +126,13 @@ export function PublishDialog({
 
   const rollback = async (releaseId: string) => {
     setRollingBackId(releaseId);
+    setPublishError(null);
     try {
       await onRollback(project.id, releaseId);
-    } catch {
-      // The release's own failed state carries the reason.
+    } catch (error) {
+      setPublishError(
+        error instanceof Error ? error.message : "Failed to roll back",
+      );
     } finally {
       setRollingBackId(null);
     }
@@ -155,8 +158,8 @@ export function PublishDialog({
         <DialogHeader>
           <DialogTitle>Publish</DialogTitle>
           <DialogDescription>
-            Commits the current code, builds it, and serves the build as
-            production on this machine.
+            Commits the current code, builds it, and puts the build live on the
+            address below.
           </DialogDescription>
         </DialogHeader>
 

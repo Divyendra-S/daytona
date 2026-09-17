@@ -65,7 +65,7 @@ export type ProjectItem = {
    * bridge. Empty when signing fails, so never a URL base.
    */
   previewUrl: string;
-  /** A signed, expiring URL straight to the sandbox's production port. */
+  /** Where the project is published, live or not yet. Empty when no `SITES_DOMAIN` is set. */
   productionUrl: string;
   /** False for a pre-Daytona project, which has no sandbox and cannot be opened. */
   hasSandbox: boolean;

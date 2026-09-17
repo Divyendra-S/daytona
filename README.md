@@ -2,8 +2,7 @@
 
 An open-source AI app builder. Describe what you want, and AI Builder builds it for you in real time — complete with a live preview, terminals, and one-click publishing.
 
-
-AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds and serves. Your computer runs the chat, the UI and the preview proxy; each project's metadata, conversations and releases are rows in Postgres.
+AI Builder runs on your machine; your projects do not. Every project gets its own [Daytona](https://daytona.io) sandbox — a private Linux container holding a Next.js app the agent edits, a hot-reloading dev server, and a production copy that publishing builds. A published site is a static export served from Cloudflare, so it stays up while its sandbox sleeps. Your computer runs the chat, the UI and the preview proxy; each project's metadata, conversations and releases are rows in Postgres.
 
 > **The agent works in a sandbox, not on your computer.** Its commands, its file edits and your terminal tabs all run inside the project's own container, so an agent mistake cannot touch your machine. Sandboxes stop themselves after 15 minutes idle and cost disk only while stopped.
 
@@ -11,7 +10,7 @@ AI Builder runs on your machine; your projects do not. Every project gets its ow
 
 - **Conversational app building** — Chat with an AI that writes, edits, and runs code in the project folder
 - **Live preview & terminals** — Watch the app update as it is built, and open as many shells as you want
-- **Publish and roll back** — Build the current code into a production copy; every release is a git commit to roll back to
+- **Publish and roll back** — Build the current code into a static site on its own subdomain; every release keeps its files, so rolling back is instant
 - **Persistent projects** — Code, git history and conversations survive between sessions; an idle sandbox stops and resumes where it left off
 - **Isolated execution** — Every project runs in its own container, so nothing the agent does reaches your machine
 - **Import from GitHub** — Start a project from any public repository
@@ -55,7 +54,22 @@ APP_HOSTS=builder.example.com
 PREVIEW_PROXY_HOST=my-app-preview.vercel.app
 # Or: the domain the Cloudflare Worker in workers/preview-proxy is served on.
 PREVIEW_PROXY_DOMAIN=preview.example.com
+
+# Publishing. Every project is served on <project id>.SITES_DOMAIN by the
+# Worker in workers/sites, from an R2 bucket and a KV namespace this app writes.
+SITES_DOMAIN=example.com
+CF_ACCOUNT_ID=
+# An API token with Account → Workers KV Storage → Edit.
+CF_API_TOKEN=
+CF_KV_NAMESPACE_ID=
+# An R2 API token with Object Read & Write on the bucket.
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+# Optional; this is the default.
+R2_BUCKET=published-sites
 ```
+
+**Publishing** needs a domain on Cloudflare: a proxied wildcard record (`*`, `AAAA`, `100::`), an R2 bucket, a KV namespace, and the Worker in `workers/sites` — set its route and KV id in `workers/sites/wrangler.jsonc` and run `npx wrangler deploy` there. `docs/PUBLISH_PLAN.md` has the dashboard steps.
 
 **Deploying to Cloudflare** — the app is a Worker, built by the OpenNext adapter. Locally, `pnpm deploy` builds and uploads it. In Cloudflare's own Workers Builds, set the **build command** to `pnpm run cf:build` and the **deploy command** to `npx wrangler deploy`: `opennextjs-cloudflare deploy` only uploads what a previous build produced, so running it alone fails with "Could not find compiled Open Next config". Note that `cf:build` is its own script because the adapter's build runs `pnpm run build` itself — pointing `build` at the adapter would call it in a loop.
 
@@ -76,18 +90,18 @@ Open [http://localhost:3000](http://localhost:3000) to start building. AI Builde
 
 ## How a project works
 
-Both folders live inside the project's sandbox, and both ports are the sandbox's own — every project uses the same two, because every project has its own network.
+Both folders live inside the project's sandbox, and the dev port is the sandbox's own — every project uses the same one, because every project has its own network.
 
-|           | Dev                              | Production                                         |
-| --------- | -------------------------------- | -------------------------------------------------- |
-| Folder    | `~/app` (a git repo)             | `~/production` (a clone of it)                     |
-| Exists    | from the moment the project does | created by the first publish                       |
-| Runs      | `npm run dev` on port 3000       | `npm run build`, then `npm run start` on port 3001 |
-| Edited by | the agent                        | nothing — only publishes                           |
+|           | Dev                              | Production                                          |
+| --------- | -------------------------------- | --------------------------------------------------- |
+| Folder    | `~/app` (a git repo)             | `~/production` (a clone of it)                      |
+| Exists    | from the moment the project does | created by the first publish                        |
+| Runs      | `npm run dev` on port 3000       | `npm run build` only — the site is served elsewhere |
+| Edited by | the agent                        | nothing — only publishes                            |
 
 **Creating** a project provisions a sandbox, clones the [Next.js + shadcn template](https://github.com/freestyle-sh/freestyle-base-nextjs-shadcn) (or a GitHub repo), runs `npm install`, and starts the dev server — about ten seconds altogether.
 
-**Publishing** commits everything in `app/`, checks that commit out in `production/`, reinstalls dependencies only if `package.json` or the lockfile changed, builds, and serves the build. **Rolling back** does the same with an earlier release's commit.
+**Publishing** commits everything in `app/`, checks that commit out in `production/`, reinstalls dependencies only if `package.json` or the lockfile changed, and builds it as a static export — whatever the project's `next.config` says, so a published app cannot use API routes, server actions or middleware. The files go to R2 under the release's id, and the project's hostname is pointed at them in KV; `workers/sites` serves every hostname from those two. **Rolling back** repoints the hostname at an earlier release's files, with no build.
 
 **Servers and terminals** live in the sandbox, not in AI Builder, so they survive AI Builder restarting: a dev server keeps running and a terminal tab reconnects to the shell it had. Opening a project wakes its sandbox if it went idle, which takes a few seconds and shows as "Waking the sandbox up…".
 
@@ -106,7 +120,7 @@ Both folders live inside the project's sandbox, and both ports are the sandbox's
 - `lib/terminal-bridge.ts` — sandbox ptys and server sessions, fanned out to browser tabs over SSE
 - `lib/preview-proxy.ts` — the loopback proxy that fronts the sandbox and injects the preview bridge
 - `lib/hosted-preview-proxy.ts` — the same proxy for a deployed build, served on a second hostname of the deployment
-- `lib/publish.ts` — building a release into production, and rolling back
+- `lib/publish.ts` — building a release and rolling back; `lib/site-hosting.ts` — the R2 bucket and KV routes published sites are served from; `workers/sites` — the Worker that serves them
 - `lib/create-tools.ts` — the agent's tools; `lib/system-prompt.ts` — its instructions
 - `lib/llm-provider.ts` — OpenRouter model setup
 - `proxy.ts` — keeps the API to this machine's own pages (the entire auth model)

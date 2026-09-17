@@ -6,12 +6,7 @@ import {
   projectSandboxState,
   touchProject,
 } from "@/lib/sandbox";
-import {
-  devServerState,
-  ensureDevServer,
-  ensureProductionServer,
-  productionServerState,
-} from "@/lib/terminal-bridge";
+import { devServerState, ensureDevServer } from "@/lib/terminal-bridge";
 import { LOCAL_HOST, PREVIEW_TOKEN_HEADER, SANDBOX_DEV_PORT } from "@/lib/vars";
 
 /**
@@ -120,15 +115,6 @@ export async function GET(
   if (devState === "never") {
     await ensureDevServer(projectId).catch(() => {});
     devState = "running";
-  }
-
-  // A sandbox that went idle took the production server down with it, and
-  // nothing else brings it back until someone opens a terminal tab. This poll
-  // is the one thing the workspace always runs, so it restores production too.
-  // Checked on its own terms: the dev server is started a moment earlier, while
-  // the sandbox is still waking, so its state says nothing about production's.
-  if (metadata.liveReleaseId && productionServerState(projectId) === "never") {
-    void ensureProductionServer(projectId).catch(() => {});
   }
 
   // The proxy listens on this machine's loopback, so it is only a preview the

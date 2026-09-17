@@ -2,27 +2,19 @@ import { NextResponse } from "next/server";
 import { authorizeProject } from "@/lib/project-access";
 import {
   ensureDevServer,
-  ensureProductionServer,
   resizeTerminal,
   signalTerminal,
   subscribeToTerminal,
   writeToTerminal,
 } from "@/lib/terminal-bridge";
-import { APP_SESSION, PROD_SESSION } from "@/lib/vars";
+import { APP_SESSION } from "@/lib/vars";
 
 /**
  * A terminal name the browser may ask for: the dev server, or an ad-hoc shell.
- * The production server's session is publishing's alone.
  */
 const parseSession = (raw: string | null) => {
   const slug = (raw ?? APP_SESSION).trim();
-  if (
-    !/^[a-z0-9-]{1,60}$/.test(slug) ||
-    /^\d+$/.test(slug) ||
-    slug === PROD_SESSION
-  ) {
-    return null;
-  }
+  if (!/^[a-z0-9-]{1,60}$/.test(slug) || /^\d+$/.test(slug)) return null;
   return slug;
 };
 
@@ -47,12 +39,8 @@ export async function GET(
 
   if (slug === APP_SESSION) {
     // The sandbox may have been stopped for idleness since the project was
-    // last open, so this starts it and brings the dev server — and production,
-    // if published — back up.
+    // last open, so this starts it and brings the dev server back up.
     await ensureDevServer(projectId);
-    if (metadata.liveReleaseId) {
-      await ensureProductionServer(projectId);
-    }
   }
 
   const encoder = new TextEncoder();

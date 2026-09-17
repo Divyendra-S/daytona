@@ -22,7 +22,14 @@ export async function POST(
     );
   }
 
-  await rollbackToRelease(projectId, releaseId);
+  try {
+    await rollbackToRelease(projectId, releaseId);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Rollback failed." },
+      { status: 500 },
+    );
+  }
 
-  return NextResponse.json({ releaseId, state: "publishing" });
+  return NextResponse.json({ releaseId, state: "live" });
 }

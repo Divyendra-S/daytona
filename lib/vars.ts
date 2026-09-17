@@ -2,9 +2,8 @@
 export const TEMPLATE_REPO =
   "https://github.com/freestyle-sh/freestyle-base-nextjs-shadcn";
 
-/** The named sessions a project's dev and production servers run in. */
+/** The named session a project's dev server runs in. */
 export const APP_SESSION = "dev";
-export const PROD_SESSION = "prod";
 
 /**
  * The address the preview proxy binds to on *this* machine. Not "localhost":
@@ -19,10 +18,10 @@ export const LOCAL_HOST = "127.0.0.1";
 /**
  * Fixed ports inside every sandbox. Each sandbox has its own network
  * namespace, so unlike local mode there is nothing to allocate around: every
- * project's dev server is on 3000 and its production server on 3001.
+ * project's dev server is on 3000. A published site is served from outside
+ * the sandbox (see `lib/site-hosting.ts`), so it needs no port here.
  */
 export const SANDBOX_DEV_PORT = 3000;
-export const SANDBOX_PROD_PORT = 3001;
 
 /**
  * What a project's sandbox is built from. A snapshot is used when one is

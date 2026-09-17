@@ -6,12 +6,14 @@ import {
   updateRelease,
 } from "./project-storage";
 import type { ProjectRelease } from "./project-types";
-import { openProject, previewOrigin } from "./sandbox";
+import { openProject } from "./sandbox";
 import {
-  ensureProductionServer,
-  stopProductionServer,
-} from "./terminal-bridge";
-import { PREVIEW_TOKEN_HEADER, SANDBOX_PROD_PORT } from "./vars";
+  assertSiteHosting,
+  releaseIsUploaded,
+  routeHost,
+  siteHost,
+  uploadSite,
+} from "./site-hosting";
 
 /** Each release pins its commit with a ref in the app repo, which production fetches by name. */
 const releaseRef = (releaseId: string) =>
@@ -31,10 +33,43 @@ const exists = async (projectId: string, path: string) => {
 };
 
 /**
- * Put one release into the project's production folder: check its commit
- * out, reinstall dependencies if they changed, build, and serve the build on
- * the production port. The running server is stopped for the build, since
- * `next build` rewrites the `.next` it serves from.
+ * Make whatever `next.config` the release has build a static export, by
+ * renaming it and putting a config in its place that wraps it. Done to the
+ * production copy only, and undone by the next checkout, so the project's own
+ * config — and its dev server — are left as the user and the agent wrote them.
+ *
+ * `images.unoptimized` goes with it: the default image loader needs a server,
+ * and `next build` refuses to export a page that uses it.
+ */
+const FORCE_STATIC_EXPORT = `
+const fs = require("fs");
+const ext = ["ts", "mjs", "js", "cjs"].find((e) => fs.existsSync("next.config." + e));
+const wrap = "async (...args) => {\\n  const config = typeof base === 'function' ? await base(...args) : base;\\n  return { ...config, output: 'export', images: { ...config.images, unoptimized: true } };\\n}";
+if (!ext) {
+  fs.writeFileSync("next.config.mjs", "const base = {};\\nexport default " + wrap + ";\\n");
+} else {
+  fs.renameSync("next.config." + ext, "next.config.base." + ext);
+  const esm = ext === "ts" || ext === "mjs" ||
+    (ext === "js" && JSON.parse(fs.readFileSync("package.json", "utf8")).type === "module");
+  const from = JSON.stringify(ext === "ts" ? "./next.config.base" : "./next.config.base." + ext);
+  fs.writeFileSync(
+    "next.config." + ext,
+    "// @ts-nocheck\\n" + (esm
+      ? "import base from " + from + ";\\nexport default " + wrap + ";\\n"
+      : "const base = require(" + from + ");\\nmodule.exports = " + wrap + ";\\n"),
+  );
+}
+`;
+
+/** Where the build is packed for the trip out of the sandbox. */
+const SITE_ARCHIVE = "/tmp/site.tgz";
+
+/**
+ * Publish one release: check its commit out into the project's production
+ * folder, reinstall dependencies if they changed, build the static export,
+ * and hand its files to `site-hosting`, which serves them on the project's
+ * hostname. Nothing keeps running in the sandbox afterwards, so the site
+ * stays up when the sandbox goes idle.
  *
  * Every command runs in the project's sandbox. Timeouts are seconds, which is
  * Daytona's unit — its own default is ten, which an install or a build would
@@ -57,7 +92,7 @@ const shipToProduction = async (projectId: string, release: ProjectRelease) => {
   await runStep(
     "Checkout",
     projectId,
-    `git fetch --quiet origin ${releaseRef(release.id)} && git checkout --quiet --force ${release.commit} && git clean -fdq -e node_modules -e .next`,
+    `git fetch --quiet origin ${releaseRef(release.id)} && git checkout --quiet --force ${release.commit} && git clean -fdq -e node_modules -e .next -e out`,
     production,
     300,
   );
@@ -76,38 +111,66 @@ const shipToProduction = async (projectId: string, release: ProjectRelease) => {
     );
   }
 
-  await stopProductionServer(projectId);
-  await runStep("Build", projectId, "npm run build", production, 900);
-  await ensureProductionServer(projectId);
+  await runStep(
+    "Configure",
+    projectId,
+    `node -e ${shellQuote(FORCE_STATIC_EXPORT)}`,
+    production,
+    60,
+  );
 
-  // Not live until it actually serves.
-  const { url, token } = await previewOrigin(projectId, SANDBOX_PROD_PORT);
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const status = await fetch(url, {
-      redirect: "manual",
-      headers: { [PREVIEW_TOKEN_HEADER]: token },
-      signal: AbortSignal.timeout(10_000),
-    }).then(
-      (response) => response.status,
-      () => null,
+  // The production copy is a clone, so it has no `.env*` of its own — and must
+  // not get one: whatever a static build reads from env ends up in public files.
+  await runStep(
+    "Build",
+    projectId,
+    "rm -rf out && npm run build",
+    production,
+    900,
+  );
+  if (!(await exists(projectId, `${production}/out/index.html`))) {
+    throw new Error(
+      "The build produced no static site. A published app cannot use API routes, server actions or middleware.",
     );
-    if (status !== null && status >= 200 && status < 400) return;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error("Production server never responded.");
+
+  await runStep(
+    "Pack",
+    projectId,
+    `tar -czf ${SITE_ARCHIVE} -C out .`,
+    production,
+    120,
+  );
+
+  // A signed URL and a plain fetch, not the SDK's `downloadFile`: that one is
+  // multipart, and its parser does not survive bundling for a Worker.
+  const { sandbox } = await openProject(projectId);
+  const archive = await fetch(await sandbox.downloadUrl(SITE_ARCHIVE, 600));
+  if (!archive.ok) {
+    throw new Error(`Could not fetch the build (${archive.status}).`);
+  }
+  await uploadSite(
+    projectId,
+    release.id,
+    new Uint8Array(await archive.arrayBuffer()),
+  );
+
+  // Live from this write on: the serving Worker reads the hostname's release from here.
+  await routeHost(siteHost(projectId), projectId, release.id);
 };
 
 /**
- * Run a release to completion in the background and record how it ended. The
- * build takes a while, so nothing waits on this: the release is already stored
- * as `publishing` and the client polls the project for the outcome.
+ * Run a release to completion and record how it ended. The release is already
+ * stored as `publishing` and the client polls the project for the outcome; the
+ * returned promise never rejects, and is only there so the route can keep its
+ * request open — a Worker is stopped once it has answered.
  */
 const settleRelease = (
   projectId: string,
   releaseId: string,
   work: Promise<void>,
-) => {
-  void work
+) =>
+  work
     .then(() => updateRelease(projectId, releaseId, { state: "live" }))
     .catch(async (error: unknown) => {
       console.error("Release failed:", error);
@@ -115,11 +178,17 @@ const settleRelease = (
         state: "failed",
         error: error instanceof Error ? error.message : "Publish failed.",
       });
+    })
+    .catch((error: unknown) => {
+      console.error("Could not record the release's outcome:", error);
     });
-};
 
-/** Commit the app's current code and build it into production, as a new release. */
+/**
+ * Commit the app's current code and publish it as a new release. Returns once
+ * the release is recorded; `settled` resolves when it is live or has failed.
+ */
 export const publishProject = async (projectId: string, message: string) => {
+  assertSiteHosting();
   await readProjectMetadata(projectId);
   const { app } = await openProject(projectId);
   const releaseId = randomUUID();
@@ -153,24 +222,35 @@ export const publishProject = async (projectId: string, message: string) => {
   };
   await addRelease(projectId, release);
 
-  settleRelease(projectId, releaseId, shipToProduction(projectId, release));
-
-  return releaseId;
+  return {
+    releaseId,
+    settled: settleRelease(
+      projectId,
+      releaseId,
+      shipToProduction(projectId, release),
+    ),
+  };
 };
 
-/** Put production back on an earlier release, by building its commit again. */
+/**
+ * Put production back on an earlier release. Its files are still in the
+ * bucket, so this only repoints the hostname — no build, and done in a moment.
+ */
 export const rollbackToRelease = async (
   projectId: string,
   releaseId: string,
 ) => {
+  assertSiteHosting();
   const metadata = await readProjectMetadata(projectId);
   const release = metadata.releases.find((entry) => entry.id === releaseId);
   if (!release) throw new Error("Release not found.");
+  if (
+    release.state !== "live" ||
+    !(await releaseIsUploaded(projectId, releaseId))
+  ) {
+    throw new Error("This release was never uploaded. Publish again instead.");
+  }
 
-  await updateRelease(projectId, releaseId, {
-    state: "publishing",
-    error: null,
-  });
-
-  settleRelease(projectId, releaseId, shipToProduction(projectId, release));
+  await routeHost(siteHost(projectId), projectId, releaseId);
+  await updateRelease(projectId, releaseId, { state: "live" });
 };

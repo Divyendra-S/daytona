@@ -51,14 +51,29 @@ const toSummary = (
   updatedAt: row.updatedAt.toISOString(),
 });
 
-const toRelease = (row: ReleaseRow): ProjectRelease => ({
-  id: row.id,
-  message: row.message,
-  createdAt: row.createdAt.toISOString(),
-  commit: row.commit,
-  state: row.state,
-  error: row.error,
-});
+/**
+ * How long a release may stay `publishing`. Install and build are capped at
+ * twenty-five minutes between them; past this, whatever was publishing it is
+ * gone — a closed tab ends the request the work ran in — and nothing will ever
+ * record an outcome. Reported as failed rather than left to block the next
+ * publish forever.
+ */
+const PUBLISH_DEADLINE = 30 * 60 * 1000;
+
+const toRelease = (row: ReleaseRow): ProjectRelease => {
+  const abandoned =
+    row.state === "publishing" &&
+    Date.now() - row.createdAt.getTime() > PUBLISH_DEADLINE;
+
+  return {
+    id: row.id,
+    message: row.message,
+    createdAt: row.createdAt.toISOString(),
+    commit: row.commit,
+    state: abandoned ? "failed" : row.state,
+    error: abandoned ? "Publishing was interrupted. Publish again." : row.error,
+  };
+};
 
 const toMetadata = (
   project: ProjectRow,

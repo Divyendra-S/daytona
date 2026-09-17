@@ -270,14 +270,17 @@ export function ProjectWorkspaceShell({
     [projectId, selectedProject?.conversations, router],
   );
 
-  /** Commit the current code and build it into the project's production copy. */
+  /** Commit the current code and publish it as a new release. */
   const onPublish = useCallback(
     async (nextProjectId: string, message: string) => {
+      // The request stays open until the release is live or has failed, so the
+      // release is picked up — as "publishing" — without waiting for it.
+      const showRelease = window.setTimeout(() => void loadProjects(), 3000);
       const response = await fetch(`/api/projects/${nextProjectId}/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
-      });
+      }).finally(() => window.clearTimeout(showRelease));
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {

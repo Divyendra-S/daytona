@@ -13,16 +13,18 @@ import {
   type ProjectMetadata,
 } from "@/lib/project-types";
 import { deleteProjectSandbox, dormantPreviewUrl } from "@/lib/sandbox";
+import { siteUrl } from "@/lib/site-hosting";
 import { ensureDevServer } from "@/lib/terminal-bridge";
-import { SANDBOX_DEV_PORT, SANDBOX_PROD_PORT } from "@/lib/vars";
+import { SANDBOX_DEV_PORT } from "@/lib/vars";
 
 /**
  * A project as the client sees it.
  *
- * Both URLs are signed: single-port and expiring, so unlike the sandbox-wide
- * preview token they are safe to hand to the browser. Neither starts the
+ * `previewUrl` is signed: single-port and expiring, so unlike the sandbox-wide
+ * preview token it is safe to hand to the browser. It does not start the
  * sandbox — the home screen lists every project, and waking them all would
- * undo the idle auto-stop that keeps the bill near zero.
+ * undo the idle auto-stop that keeps the bill near zero. `productionUrl` is
+ * the project's published site, which no sandbox is behind.
  *
  * The workspace does not load `previewUrl` directly: it loads the `proxyUrl`
  * that `preview-status` returns, which is this machine's proxy and carries the
@@ -37,9 +39,7 @@ const toProjectItem = async (
   previewUrl: metadata.sandboxId
     ? await dormantPreviewUrl(id, SANDBOX_DEV_PORT)
     : "",
-  productionUrl: metadata.liveReleaseId
-    ? await dormantPreviewUrl(id, SANDBOX_PROD_PORT)
-    : "",
+  productionUrl: siteUrl(id),
   hasSandbox: Boolean(metadata.sandboxId),
   conversations: metadata.conversations,
   releases: metadata.releases,

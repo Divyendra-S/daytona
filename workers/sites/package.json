@@ -1,0 +1,13 @@
+{
+  "name": "runobi-sites",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260915.1",
+    "typescript": "5.9.3",
+    "wrangler": "^4.132.0"
+  }
+}

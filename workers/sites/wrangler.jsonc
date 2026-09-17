@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "runobi-sites",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // Every published project gets a hostname under this wildcard, so the zone
+  // must be on Cloudflare. Set the same domain as SITES_DOMAIN in the app.
+  // The preview proxy's `*.preview.<domain>` is a level deeper and more
+  // specific, so the two wildcards do not collide.
+  "routes": [{ "pattern": "*.example.com/*", "zone_name": "example.com" }],
+  // What the app's publish writes (lib/site-hosting.ts) and this Worker reads.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "published-sites" }],
+  "kv_namespaces": [
+    { "binding": "SITE_ROUTES", "id": "PASTE_KV_NAMESPACE_ID" },
+  ],
+}

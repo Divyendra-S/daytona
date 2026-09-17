@@ -1,11 +1,6 @@
 import type { PtyHandle } from "@daytonaio/sdk";
 import { openProject, sandboxGeneration } from "./sandbox";
-import {
-  APP_SESSION,
-  PROD_SESSION,
-  SANDBOX_DEV_PORT,
-  SANDBOX_PROD_PORT,
-} from "./vars";
+import { APP_SESSION, SANDBOX_DEV_PORT } from "./vars";
 
 /**
  * Named terminal sessions inside a project's sandbox, fanned out to browser
@@ -18,9 +13,9 @@ import {
  *   stable id, so `connectPty` re-attaches to the shell that is already there
  *   — a shell now survives AI Builder itself restarting, which it never did
  *   when the pty was a local child process.
- * - A project's dev and production servers are **exec sessions**, not ptys, so
- *   that they keep running with nothing attached and their output can be
- *   replayed from the sandbox rather than only from this process's memory.
+ * - A project's dev server is an **exec session**, not a pty, so that it keeps
+ *   running with nothing attached and its output can be replayed from the
+ *   sandbox rather than only from this process's memory.
  */
 type Session = {
   /** A user's shell, when one is attached. */
@@ -288,60 +283,22 @@ export const devServerState = (
   return session.cmdId ? "running" : "exited";
 };
 
-/**
- * A project's production server as this AI Builder process knows it, on the
- * same terms as `devServerState`.
- */
-export const productionServerState = (
-  projectId: string,
-): "running" | "exited" | "never" => {
-  const session = registry.get(key(projectId, PROD_SESSION));
-  if (!session || session.generation !== sandboxGeneration(projectId)) {
-    return "never";
-  }
-  return session.cmdId ? "running" : "exited";
-};
-
 /** Replace the dev server, for config it only reads at startup. */
 export const restartDevServer = async (projectId: string) => {
   await closeSession(projectId, APP_SESSION);
   await ensureDevServer(projectId);
 };
 
-/** Serve a project's production build, if it has one and it is not already served. */
-export const ensureProductionServer = async (projectId: string) => {
-  const { sandbox, production } = await openProject(projectId);
-  const built = await sandbox.fs
-    .getFileDetails(`${production}/.next`)
-    .then(() => true)
-    .catch(() => false);
-  if (!built) return;
-
-  await openServer(
-    projectId,
-    PROD_SESSION,
-    `cd ${production} && npm run start -- --port ${SANDBOX_PROD_PORT} --hostname 0.0.0.0`,
-  );
-};
-
-export const stopProductionServer = (projectId: string) =>
-  closeSession(projectId, PROD_SESSION);
-
 /* ------------------------------------------------------------------ */
 /*  What the browser and the agent talk to                             */
 /* ------------------------------------------------------------------ */
 
 /**
- * Attach to a session by name: the dev server, the production server, or a
- * user's shell.
+ * Attach to a session by name: the dev server, or a user's shell.
  */
 const openSession = async (projectId: string, slug: string) => {
   if (slug === APP_SESSION) {
     await ensureDevServer(projectId);
-    return record(projectId, slug);
-  }
-  if (slug === PROD_SESSION) {
-    await ensureProductionServer(projectId);
     return record(projectId, slug);
   }
   return openShell(projectId, slug);
