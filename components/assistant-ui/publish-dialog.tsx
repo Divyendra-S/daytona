@@ -19,6 +19,7 @@ import {
   RocketIcon,
   RotateCcwIcon,
 } from "lucide-react";
+import { CustomDomains } from "@/components/assistant-ui/custom-domains";
 import type { ProjectItem, ProjectRelease } from "@/lib/project-types";
 
 const formatRelativeTime = (dateString: string) => {
@@ -227,6 +228,8 @@ export function PublishDialog({
               )}
             </div>
           </div>
+
+          <CustomDomains projectId={project.id} open={open} />
 
           {/* New release */}
           <div className="space-y-2">

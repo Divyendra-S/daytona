@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { releaseProjectDomains } from "@/lib/custom-domains";
 import { authorizeProject } from "@/lib/project-access";
 import { deleteProject } from "@/lib/project-storage";
 import { deleteProjectSandbox } from "@/lib/sandbox";
@@ -27,6 +28,9 @@ export async function DELETE(
       // Files left in the bucket cost cents; a project that cannot be deleted costs more.
     },
   );
+  await releaseProjectDomains(projectId).catch(() => {
+    // A hostname left at Cloudflare serves nothing once its route is gone.
+  });
   await deleteProject(projectId);
 
   return NextResponse.json({ ok: true });

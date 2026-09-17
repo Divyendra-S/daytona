@@ -67,6 +67,10 @@ R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
 # Optional; this is the default.
 R2_BUCKET=published-sites
+# Optional: users' own domains (Cloudflare for SaaS). The zone id of
+# SITES_DOMAIN; CF_KV_API_TOKEN then also needs Zone → SSL and Certificates →
+# Edit. CUSTOM_DOMAINS=off hides the feature.
+CF_ZONE_ID=
 ```
 
 **Publishing** needs a domain on Cloudflare: a proxied wildcard record (`*`, `AAAA`, `100::`), an R2 bucket, a KV namespace, and the Worker in `workers/sites` — set its route and KV id in `workers/sites/wrangler.jsonc` and run `npx wrangler deploy` there. `docs/PUBLISH_PLAN.md` has the dashboard steps.

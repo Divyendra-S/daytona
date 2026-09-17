@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { activeDomainHosts } from "./custom-domains";
 import { GIT_IDENTITY, run, runStep, shellQuote } from "./project-runtime";
 import {
   addRelease,
@@ -63,6 +64,22 @@ if (!ext) {
   );
 }
 `;
+
+/**
+ * Point every hostname the project is served on — its subdomain and the
+ * user's own domains — at one release.
+ */
+const routeSite = async (
+  projectId: string,
+  subdomain: string | null,
+  releaseId: string,
+) => {
+  const hosts = [
+    siteHost(projectId, subdomain),
+    ...(await activeDomainHosts(projectId)),
+  ];
+  await Promise.all(hosts.map((host) => routeHost(host, projectId, releaseId)));
+};
 
 /** Where the build is packed for the trip out of the sandbox. */
 const SITE_ARCHIVE = "/tmp/site.tgz";
@@ -172,7 +189,7 @@ const shipToProduction = async (projectId: string, release: ProjectRelease) => {
 
   // Live from this write on: the serving Worker reads the hostname's release from here.
   const { subdomain } = await readProjectMetadata(projectId);
-  await routeHost(siteHost(projectId, subdomain), projectId, release.id);
+  await routeSite(projectId, subdomain, release.id);
 };
 
 /**
@@ -294,10 +311,6 @@ export const rollbackToRelease = async (
     throw new Error("This release was never uploaded. Publish again instead.");
   }
 
-  await routeHost(
-    siteHost(projectId, metadata.subdomain),
-    projectId,
-    releaseId,
-  );
+  await routeSite(projectId, metadata.subdomain, releaseId);
   await updateRelease(projectId, releaseId, { state: "live" });
 };

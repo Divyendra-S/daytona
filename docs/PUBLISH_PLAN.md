@@ -124,7 +124,7 @@ Known limits:
 - The whole tarball is held in memory while uploading (Workers: 128 MB).
 - Old releases' files are never pruned.
 
-## Part C — Users' own domains (planned, not built)
+## Part C — Users' own domains (code built; C1 setup pending)
 
 Cloudflare for SaaS (Custom Hostnames). First 100 hostnames are free, then
 $0.10/month each; bandwidth is free. A custom domain is one more KV entry
@@ -144,12 +144,12 @@ pointing at the project's live release, so the serving logic does not change.
 5. After the code lands: `pnpm db:push`, then
    `cd workers/sites && npx wrangler deploy`, then redeploy the builder.
 
-### C2 — Code (Owner: Claude)
+### C2 — Code (Owner: Claude, done)
 
 - **`lib/db/schema.ts`** — new `domains` table: `hostname` (primary key, so
   one project per hostname), `projectId` (references `projects.id`, cascade
   delete), `cfHostnameId`, `status` (`pending` | `active` | `failed`),
-  `error`, `createdAt`. Migration `drizzle/0003_*`.
+  `error`, `createdAt`. Migration `drizzle/0003_fast_strong_guy.sql`.
 - **`lib/custom-domains.ts`** (new) — Cloudflare REST calls, using
   `CF_KV_API_TOKEN` and `CF_ZONE_ID`:
   - `parseHostname(raw)`: lowercase, strip scheme/path, must be a valid
@@ -163,9 +163,9 @@ pointing at the project's live release, so the serving logic does not change.
     `status` and `ssl.status` are both `active`; surfaces
     `verification_errors` otherwise.
   - `deleteCustomHostname(id)`.
-- **`lib/project-storage.ts` / `lib/project-types.ts`** — `listDomains`,
-  `addDomain`, `updateDomain`, `removeDomain`; project metadata carries
-  `domains: { hostname, status, error }[]` so the dialog can render them.
+- The domain rows are read and written in `lib/custom-domains.ts` itself, and
+  the dialog loads them from the domains route while it is open — they are
+  not part of project metadata, so no other project query changed.
 - **`app/api/projects/[projectId]/domains/route.ts`** (new)
   - `POST { hostname }` — check the plan flag, parse, create at Cloudflare,
     insert row as `pending`.

@@ -10,7 +10,7 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 import { type UIMessage } from "ai";
-import type { ProjectRelease } from "../project-types";
+import type { ProjectDomain, ProjectRelease } from "../project-types";
 
 const createdAt = () =>
   timestamp({ withTimezone: true }).notNull().defaultNow();
@@ -72,6 +72,23 @@ export const releases = pgTable(
   },
   (table) => [primaryKey({ columns: [table.projectId, table.id] })],
 );
+
+/**
+ * A domain of the user's own that serves a project, beside its subdomain. The
+ * hostname is the key: a domain serves one project and no more.
+ */
+export const domains = pgTable("domains", {
+  hostname: text().primaryKey(),
+  projectId: text()
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  /** The custom hostname's id at Cloudflare, which issues its certificate. */
+  cfHostnameId: text().notNull(),
+  /** `active` once Cloudflare has seen the user's CNAME and issued a certificate. */
+  status: text().$type<ProjectDomain["status"]>().notNull(),
+  error: text(),
+  createdAt: createdAt(),
+});
 
 /** One row per conversation, its messages kept whole as they are saved. */
 export const conversations = pgTable(

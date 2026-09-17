@@ -8,6 +8,14 @@ export type ProjectRelease = {
   error: string | null;
 };
 
+/** A domain of the user's own, connected to a project. */
+export type ProjectDomain = {
+  hostname: string;
+  /** `pending` until the user's CNAME is seen and the certificate is issued. */
+  status: "pending" | "active" | "failed";
+  error: string | null;
+};
+
 export type ProjectConversationSummary = {
   id: string;
   title: string;
