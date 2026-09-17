@@ -60,7 +60,7 @@ PREVIEW_PROXY_DOMAIN=preview.example.com
 SITES_DOMAIN=example.com
 CF_ACCOUNT_ID=
 # An API token with Account → Workers KV Storage → Edit.
-CF_API_TOKEN=
+CF_KV_API_TOKEN=
 CF_KV_NAMESPACE_ID=
 # An R2 API token with Object Read & Write on the bucket.
 R2_ACCESS_KEY_ID=

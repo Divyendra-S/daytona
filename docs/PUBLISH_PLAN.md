@@ -54,7 +54,7 @@ to end, which needs Part A.
    ```
    SITES_DOMAIN=yourdomain.com
    CF_ACCOUNT_ID=
-   CF_API_TOKEN=
+   CF_KV_API_TOKEN=
    CF_KV_NAMESPACE_ID=
    R2_ACCESS_KEY_ID=
    R2_SECRET_ACCESS_KEY=

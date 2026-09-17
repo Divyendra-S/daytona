@@ -19,7 +19,7 @@ import { extract } from "tar-stream";
 const REQUIRED = [
   "SITES_DOMAIN",
   "CF_ACCOUNT_ID",
-  "CF_API_TOKEN",
+  "CF_KV_API_TOKEN",
   "CF_KV_NAMESPACE_ID",
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",
@@ -142,7 +142,7 @@ export const routeHost = async (
 ) => {
   const response = await fetch(routeUrl(host), {
     method: "PUT",
-    headers: { Authorization: `Bearer ${setting("CF_API_TOKEN")}` },
+    headers: { Authorization: `Bearer ${setting("CF_KV_API_TOKEN")}` },
     body: `${projectId}/${releaseId}`,
   });
   if (!response.ok) {
@@ -156,7 +156,7 @@ export const deleteSite = async (projectId: string) => {
 
   await fetch(routeUrl(siteHost(projectId)), {
     method: "DELETE",
-    headers: { Authorization: `Bearer ${setting("CF_API_TOKEN")}` },
+    headers: { Authorization: `Bearer ${setting("CF_KV_API_TOKEN")}` },
   });
 
   const client = r2();

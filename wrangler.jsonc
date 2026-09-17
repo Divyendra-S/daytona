@@ -20,6 +20,6 @@
   // deploy, which is the other reason every value this app needs —
   // DATABASE_URL, DAYTONA_API_KEY, OPENROUTER_API_KEY, APP_HOSTS,
   // PREVIEW_PROXY_DOMAIN, and publishing's SITES_DOMAIN, CF_ACCOUNT_ID,
-  // CF_API_TOKEN, CF_KV_NAMESPACE_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY —
+  // CF_KV_API_TOKEN, CF_KV_NAMESPACE_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY —
   // belongs there as a Secret rather than a Variable.
 }
