@@ -13,6 +13,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "db:push": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs push",
     "db:import": "node --env-file=.env.local scripts/import-json-projects.mjs",
+    "test": "node --import tsx --test lib/*.test.ts",
     "prettier": "prettier --check .",
     "prettier:fix": "prettier --write ."
   },
@@ -73,6 +74,7 @@
     "prettier": "3.8.1",
     "prettier-plugin-tailwindcss": "0.7.2",
     "tailwindcss": "4.2.1",
+    "tsx": "^4.23.13",
     "typescript": "5.9.3",
     "wrangler": "^4.132.0"
   },

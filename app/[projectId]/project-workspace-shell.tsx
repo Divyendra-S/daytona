@@ -17,8 +17,21 @@ import { ProjectsProvider } from "@/lib/projects-context";
 import { PublishDialog } from "@/components/assistant-ui/publish-dialog";
 import { CodePreview } from "@/components/assistant-ui/code-preview";
 import { FigmaCanvas } from "@/components/figma-canvas";
-import { DesignActions } from "@/components/design-actions";
-import { addEdit, clearEdits, type PickedElement } from "@/lib/edit-queue";
+import {
+  DesignActions,
+  sendToAgent,
+  useAgentBusy,
+} from "@/components/design-actions";
+import {
+  CLASS_CHANGED_EVENT,
+  ElementInspector,
+} from "@/components/element-inspector";
+import {
+  addEdit,
+  clearEdits,
+  editsBrief,
+  type PickedElement,
+} from "@/lib/edit-queue";
 import { PREVIEW_HOST_PARAM } from "@/lib/vars";
 import {
   Tooltip,
@@ -28,19 +41,21 @@ import {
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
-  ArrowUpIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronUpIcon,
   CodeIcon,
   FrameIcon,
   InfoIcon,
+  ListPlusIcon,
   Loader2Icon,
   MonitorIcon,
   MousePointerClickIcon,
   PlayIcon,
   PlusIcon,
   RotateCwIcon,
+  SendHorizontalIcon,
+  SlidersHorizontalIcon,
   XIcon,
 } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -361,11 +376,15 @@ export function ProjectWorkspaceShell({
         path?: string;
         element?: PickedElement;
         rect?: PickedElement["rect"];
+        classes?: string;
+        styles?: PickedElement["styles"];
       } | null;
       if (data?.source !== "adorable-bridge") return;
-      // A reload replaces the bridge, which starts with picking off.
-      if (data.type === "ready")
+      // A reload replaces the bridge, which starts with picking off and nothing picked.
+      if (data.type === "ready") {
         tellPreview(iframe, { type: "select", on: selectingRef.current });
+        setSelection(null);
+      }
       if (data.type === "location" && data.path)
         setPreviewPath(displayPath(data.path));
       if (data.type === "selected" && data.element) setSelection(data.element);
@@ -375,6 +394,17 @@ export function ProjectWorkspaceShell({
         setSelection((current) => (current ? { ...current, rect } : current));
       }
       if (data.type === "select-cancelled") setSelecting(false);
+      // The property inspector's traffic: new classes arrived by hot reload, the overrides came
+      // off and these are the element's styles now, or the element is gone from the page.
+      if (data.type === "class-changed")
+        window.dispatchEvent(new CustomEvent(CLASS_CHANGED_EVENT));
+      if (data.type === "styles-synced" && data.styles) {
+        const { classes = "", styles } = data;
+        setSelection((current) =>
+          current ? { ...current, classes, styles } : current,
+        );
+      }
+      if (data.type === "selection-lost") setSelection(null);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -756,25 +786,37 @@ const tellPreview = (
 const CARD_GAP = 8;
 
 /**
- * The change box for a picked element: a textarea and a submit button, nothing else.
+ * The change box for a picked element: a textarea, and what to do with what was typed.
  *
  * Placed just below the element — above it when there is no room — and kept inside the preview;
  * the frame fills its container, so the element's rect from the bridge is already in these
- * coordinates. Measured before it is shown, so it never flashes in the corner. Submitting does
- * not start the agent: the change joins the chat input, after any added before it.
+ * coordinates. Measured before it is shown, so it never flashes in the corner.
+ *
+ * Two ways out. Add to chat (Enter) does not start the agent: the change joins the chat input,
+ * after any added before it. Send now (⌘/Ctrl+Enter) hands this one change to the agent straight
+ * away — unless it is mid-turn, when the change is queued instead so the text is never lost.
+ * The sliders button opens the property inspector, which needs neither.
  */
 function SelectionPrompt({
   element,
+  projectId,
+  tell,
   onDone,
 }: {
   element: PickedElement;
+  projectId: string;
+  tell: (message: Record<string, unknown>) => void;
   onDone: () => void;
 }) {
   const [instruction, setInstruction] = useState("");
+  const [inspecting, setInspecting] = useState(false);
+  const busy = useAgentBusy(projectId);
   const card = useRef<HTMLFormElement>(null);
   const [position, setPosition] = useState<{
     left: number;
     top: number;
+    width: number;
+    height: number;
   } | null>(null);
 
   useLayoutEffect(() => {
@@ -799,7 +841,7 @@ function SelectionPrompt({
       CARD_GAP,
       Math.min(x, bounds.width - width - CARD_GAP),
     );
-    setPosition({ left, top });
+    setPosition({ left, top, width, height });
   }, [element.rect]);
 
   const submit = () => {
@@ -809,50 +851,102 @@ function SelectionPrompt({
     onDone();
   };
 
+  const sendNow = () => {
+    const text = instruction.trim();
+    if (!text) return;
+    if (busy) return submit();
+    sendToAgent(
+      projectId,
+      editsBrief([{ id: crypto.randomUUID(), element, instruction: text }], ""),
+    );
+    onDone();
+  };
+
   return (
-    <form
-      ref={card}
-      onSubmit={(event) => {
-        event.preventDefault();
-        submit();
-      }}
-      className="absolute z-20 flex w-[300px] max-w-[calc(100%-16px)] items-end gap-1.5 rounded-lg border bg-background p-1.5 shadow-lg"
-      style={{
-        left: position?.left ?? 0,
-        top: position?.top ?? 0,
-        visibility: position ? "visible" : "hidden",
-      }}
-    >
-      <textarea
-        autoFocus
-        rows={1}
-        value={instruction}
-        onChange={(event) => setInstruction(event.target.value)}
-        onKeyDown={(event) => {
-          if (
-            event.key === "Enter" &&
-            !event.shiftKey &&
-            !event.nativeEvent.isComposing
-          ) {
-            event.preventDefault();
-            submit();
-          }
-          if (event.key === "Escape") onDone();
+    <>
+      <form
+        ref={card}
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
         }}
-        placeholder="Describe the change…"
-        aria-label={`Change for ${element.path}`}
-        className="max-h-24 min-h-7 flex-1 resize-none bg-transparent px-1.5 py-1 text-xs outline-none placeholder:text-muted-foreground"
-      />
-      <button
-        type="submit"
-        disabled={!instruction.trim()}
-        aria-label="Add this change to the chat"
-        title="Add to chat (Enter)"
-        className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground text-background transition-colors hover:bg-foreground/90 disabled:opacity-40"
+        className="absolute z-20 flex w-[340px] max-w-[calc(100%-16px)] items-end gap-1.5 rounded-lg border bg-background p-1.5 shadow-lg"
+        style={{
+          left: position?.left ?? 0,
+          top: position?.top ?? 0,
+          visibility: position ? "visible" : "hidden",
+        }}
       >
-        <ArrowUpIcon className="size-3.5" />
-      </button>
-    </form>
+        <button
+          type="button"
+          onClick={() => setInspecting((open) => !open)}
+          aria-pressed={inspecting}
+          aria-label="Edit properties"
+          title="Edit properties"
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
+            inspecting
+              ? "bg-indigo-500/15 text-indigo-500"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          <SlidersHorizontalIcon className="size-3.5" />
+        </button>
+        <textarea
+          autoFocus
+          rows={1}
+          value={instruction}
+          onChange={(event) => setInstruction(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              if (event.metaKey || event.ctrlKey) sendNow();
+              else submit();
+            }
+            if (event.key === "Escape") onDone();
+          }}
+          placeholder="Describe the change…"
+          aria-label={`Change for ${element.path}`}
+          className="max-h-24 min-h-7 flex-1 resize-none bg-transparent px-1.5 py-1 text-xs outline-none placeholder:text-muted-foreground"
+        />
+        <button
+          type="submit"
+          disabled={!instruction.trim()}
+          aria-label="Add this change to the chat"
+          title="Add to chat (Enter)"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md border text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          <ListPlusIcon className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={sendNow}
+          disabled={!instruction.trim() || busy}
+          aria-label="Send this change to the agent now"
+          title={
+            busy
+              ? "Agent is working — add to chat instead"
+              : "Send to agent now (⌘↵)"
+          }
+          className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground text-background transition-colors hover:bg-foreground/90 disabled:opacity-40"
+        >
+          <SendHorizontalIcon className="size-3.5" />
+        </button>
+      </form>
+      {inspecting && position && (
+        <ElementInspector
+          element={element}
+          projectId={projectId}
+          anchor={position}
+          tell={tell}
+          onClose={() => setInspecting(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -876,6 +970,12 @@ function AppPreview({
    * server's session lives on the server regardless, so it keeps running and logging.
    */
   const [terminalOpen, setTerminalOpen] = useState(true);
+
+  const tell = useCallback(
+    (message: Record<string, unknown>) =>
+      tellPreview(iframeRef.current, message),
+    [iframeRef],
+  );
 
   useEffect(() => {
     setIframeLoaded(false);
@@ -1093,8 +1193,11 @@ function AppPreview({
           />
           {selection && (
             <SelectionPrompt
-              key={`${selection.path}:${selection.html.length}`}
+              // Per pick, not per element state: the inspector updates the selection in place.
+              key={selection.pick ?? selection.path}
               element={selection}
+              projectId={project.id}
+              tell={tell}
               onDone={onSelectionDone}
             />
           )}

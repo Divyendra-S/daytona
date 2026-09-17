@@ -124,23 +124,91 @@ Known limits:
 - The whole tarball is held in memory while uploading (Workers: 128 MB).
 - Old releases' files are never pruned.
 
-## Part C — Users' own domains (later, not built)
+## Part C — Users' own domains (planned, not built)
 
-1. Zone → SSL/TLS → Custom Hostnames → enable. Add DNS `sites` AAAA `100::`
-   proxied; set it as the **fallback origin**. First 100 hostnames are free,
-   then $0.10/month each.
-2. Add route `{ "pattern": "*/*", "zone_name": "yourdomain.com" }` to
-   `workers/sites/wrangler.jsonc` so custom hostnames reach the Worker. Keep
-   more specific routes for the main app and preview Worker.
-3. `domains` table: `hostname`, `projectId`, `cfHostnameId`, `status`. API
-   route calls `POST /zones/{zone_id}/custom_hostnames` with
-   `{ hostname, ssl: { method: "http", type: "dv" } }`. User adds
-   `CNAME www → sites.yourdomain.com` (apex needs CNAME flattening/ALIAS at
-   their DNS host; otherwise use `www` and redirect the apex). Poll
-   `GET /custom_hostnames/{id}` until `status` and `ssl.status` are `active`,
-   then `routeHost(hostname, projectId, liveReleaseId)`.
-4. Every publish and rollback calls `routeHost` for the subdomain and each
-   custom domain. The Worker needs no change.
+Cloudflare for SaaS (Custom Hostnames). First 100 hostnames are free, then
+$0.10/month each; bandwidth is free. A custom domain is one more KV entry
+pointing at the project's live release, so the serving logic does not change.
+
+### C1 — Cloudflare setup (Owner: user, one time)
+
+1. `orble.co` → SSL/TLS → Custom Hostnames → **Enable Cloudflare for SaaS**
+   (Free plan; asks for a card).
+2. DNS → Records → Add: type `AAAA`, name `sites`, content `100::`, proxy ON.
+   Back in Custom Hostnames, set **Fallback Origin** to `sites.orble.co` and
+   wait for it to show **Active**.
+3. My Profile → API Tokens → edit the existing token (`CF_KV_API_TOKEN`): add
+   Zone → SSL and Certificates → Edit, zone resource `orble.co`.
+4. Copy the **Zone ID** from the `orble.co` Overview page. Add
+   `CF_ZONE_ID=<id>` to `.env.local` and as a Secret on the builder Worker.
+5. After the code lands: `pnpm db:push`, then
+   `cd workers/sites && npx wrangler deploy`, then redeploy the builder.
+
+### C2 — Code (Owner: Claude)
+
+- **`lib/db/schema.ts`** — new `domains` table: `hostname` (primary key, so
+  one project per hostname), `projectId` (references `projects.id`, cascade
+  delete), `cfHostnameId`, `status` (`pending` | `active` | `failed`),
+  `error`, `createdAt`. Migration `drizzle/0003_*`.
+- **`lib/custom-domains.ts`** (new) — Cloudflare REST calls, using
+  `CF_KV_API_TOKEN` and `CF_ZONE_ID`:
+  - `parseHostname(raw)`: lowercase, strip scheme/path, must be a valid
+    hostname with at least two labels, must not be `orble.co` or under it.
+    Bare root domains (`myshop.com`) are refused for now with a message to
+    use `www.myshop.com` and forward the root to it at the registrar.
+  - `createCustomHostname(hostname)` →
+    `POST /zones/{zone}/custom_hostnames` with
+    `{ hostname, ssl: { method: "http", type: "dv" } }`.
+  - `readCustomHostname(id)` → `GET /custom_hostnames/{id}`; active when
+    `status` and `ssl.status` are both `active`; surfaces
+    `verification_errors` otherwise.
+  - `deleteCustomHostname(id)`.
+- **`lib/project-storage.ts` / `lib/project-types.ts`** — `listDomains`,
+  `addDomain`, `updateDomain`, `removeDomain`; project metadata carries
+  `domains: { hostname, status, error }[]` so the dialog can render them.
+- **`app/api/projects/[projectId]/domains/route.ts`** (new)
+  - `POST { hostname }` — check the plan flag, parse, create at Cloudflare,
+    insert row as `pending`.
+  - `GET` — for each `pending` row, read its status from Cloudflare; on
+    `active`, mark it and `routeHost(hostname, projectId, liveReleaseId)` if
+    the project has a live release. The dialog polls this while any domain is
+    pending.
+  - `DELETE { hostname }` — `unrouteHost`, delete at Cloudflare, delete row.
+- **`lib/publish.ts`** — one helper, `liveHosts(projectId, metadata)`: the
+  subdomain host plus every `active` custom domain. `shipToProduction` and
+  `rollbackToRelease` call `routeHost` for each. `moveSite` (subdomain
+  rename) is unchanged — custom domains do not move with it.
+- **Deleting a project** (`deleteSite` caller in
+  `app/api/projects/[projectId]/route.ts`) — also unroute and delete each
+  custom hostname at Cloudflare before the rows cascade away.
+- **`lib/site-hosting.ts`** — `CF_ZONE_ID` is *not* added to `REQUIRED`:
+  publishing keeps working without it, and only the domains routes fail with
+  "Custom domains are not set up".
+- **`components/assistant-ui/publish-dialog.tsx`** — a "Custom domain"
+  section under the subdomain: hostname input + Connect; per domain a
+  Pending/Active/Failed badge, Remove, and while pending the instruction
+  "At your domain provider add: `CNAME` · name `www` · value
+  `sites.orble.co`" with a copy button. For users without the plan flag: a
+  short note that they can forward their domain to their `orble.co` address
+  at their registrar instead.
+- **`workers/sites/wrangler.jsonc`** — add route
+  `{ "pattern": "*/*", "zone_name": "orble.co" }` so custom hostnames reach
+  the Worker, and add `orble.co` to `PASS_THROUGH_HOSTS` so the bare domain
+  is never answered as a site. More specific routes (builder, preview) still
+  win. `workers/sites/src/index.ts` needs no change.
+- **Plan gate** — there is no billing yet, so one env setting,
+  `CUSTOM_DOMAINS=on|off` (default on), checked in the `POST` route and
+  passed to the dialog. Replaced by a real plan check when billing exists.
+
+### C3 — Test
+
+1. Connect `www.<a domain we own>` in the dialog → Pending, CNAME shown.
+2. Add the CNAME → within a few minutes the badge turns Active and
+   `https://www.<domain>` serves the live release with a valid certificate.
+3. Publish again and roll back → the custom domain follows both.
+4. Remove → the domain answers "There is no site at this address" and the
+   hostname is gone from Cloudflare's Custom Hostnames list.
+5. `orble.co`, `www.orble.co` and the preview host still behave as before.
 
 ## Security notes (from `docs/TODO.md`)
 

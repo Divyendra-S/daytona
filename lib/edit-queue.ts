@@ -20,6 +20,14 @@ export type PickedElement = {
   page: string;
   rect: { x: number; y: number; width: number; height: number };
   viewport: { width: number; height: number };
+  /** For the property inspector: computed styles by CSS property, as the bridge read them. */
+  styles?: Record<string, string>;
+  /** Text and nothing else inside. */
+  textOnly?: boolean;
+  /** How many elements on the page share the tag and class string — one source, many renders. */
+  instances?: number;
+  /** Counts picks within one page load, to tell two picks of look-alike elements apart. */
+  pick?: number;
 };
 
 export type QueuedEdit = {
