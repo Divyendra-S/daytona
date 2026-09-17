@@ -137,6 +137,18 @@ const shipToProduction = async (projectId: string, release: ProjectRelease) => {
     );
   }
 
+  // A file in `public/` and a page can claim the same path — a project whose
+  // deliverable is `public/index.html`, with a home page that only redirects
+  // to it. The dev server serves the file; the export writes the page over it,
+  // and the site redirects to itself forever. The file wins here too.
+  await runStep(
+    "Pack",
+    projectId,
+    "if [ -d public ]; then cp -R public/. out/; fi",
+    production,
+    120,
+  );
+
   await runStep(
     "Pack",
     projectId,
